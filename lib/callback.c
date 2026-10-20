@@ -95,7 +95,7 @@ callback_start_track (RIP_MANAGER_INFO *rmi, TRACK_INFO* ti)
     rmi->callback_filesize = 0;
     string_from_gstring (rmi, rmi->callback_filename, 
 			 SR_MAX_PATH, console_string, 
-			 CODESET_LOCALE);
+			 CODESET_UTF8);
     rmi->callback_filename[SR_MAX_PATH-1] = '\0';
     rmi->status_callback (rmi, RM_NEW_TRACK, (void*) rmi->callback_filename);
     callback_post_status (rmi, 0);

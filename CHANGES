@@ -1,3 +1,18 @@
+1.65.0-rc.1 (2026-10-20)
+  - Modern CMake/Ninja builds, Clang 19 presets, strict warnings, sanitizers,
+    hardening, CTest, install rules, packaging and Linux CI.
+  - Verified HTTPS through libcurl, chunked transfer decoding, bounded
+    redirects and playlists, Zeno and Radio Swiss Pop page resolution.
+  - UTF-8 / legacy metadata detection, Unicode filenames and UTF-16 ID3
+    handling without splitting multibyte characters or surrogate pairs.
+  - Fix ICY metadata overreads and signed length bytes, cleanup leaks,
+    thread entry-point casting, shutdown ownership and error exit status.
+  - Fix MP3 stereo phase cancellation, RMS overflow, time rounding, invalid
+    frame-list access, frame-end byte loss and completed-writer queues.
+  - Align AAC track splits to ADTS frames; avoid writing MP3 ID3 tags to AAC.
+  - Fix Vorbis comment decoding, checksum shifts and decoder cleanup.
+  - Add deterministic transport/audio regressions and station helpers.
+
 New for 1.65.0
 ------------------------------------
 * Fix discontinuities in ogg page numbers (#1392868)

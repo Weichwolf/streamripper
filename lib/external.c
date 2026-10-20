@@ -45,7 +45,7 @@ http://www.byte.com/art/9410/sec14/art3.htm
 */
 
 /* ----------------------------- SHARED FUNCTIONS ------------------------ */
-External_Process*
+static External_Process*
 alloc_ep (void)
 {
     External_Process* ep;
@@ -288,6 +288,8 @@ spawn_external (char* cmd)
 	close (ep->mypipe[1]);
 
 	argv = buildargv (cmd);
+        if (!argv || !argv[0])
+            _exit(127);
 	while (argv[i]) {
 	    debug_printf ("argv[%d] = %s\n", i, argv[i]);
 	    i++;
@@ -307,7 +309,14 @@ spawn_external (char* cmd)
     } else {
 	/* This is the parent process. */
 	close (ep->mypipe[1]);
-	rc = fcntl (ep->mypipe[0], F_SETFL, O_NONBLOCK);
+        rc = fcntl(ep->mypipe[0], F_SETFL, O_NONBLOCK);
+        if (rc < 0) {
+            close(ep->mypipe[0]);
+            kill(ep->pid, SIGTERM);
+            waitpid(ep->pid, NULL, 0);
+            free(ep);
+            return NULL;
+        }
 	return ep;
     }
 }

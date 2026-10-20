@@ -33,11 +33,37 @@
 /******************************************************************************
  * Public functions
  *****************************************************************************/
+#if !WIN32
+struct thread_start {
+    void (*callback)(void *);
+    void *argument;
+};
+static void *thread_entry(void *opaque)
+{
+    struct thread_start start = *(struct thread_start *)opaque;
+    free(opaque);
+    start.callback(start.argument);
+    return NULL;
+}
+#endif
+
 error_code
 threadlib_beginthread (THREAD_HANDLE *thread, void (*callback)(void *), 
 		       void* arg)
 {
+#if WIN32
     BeginThread (*thread, callback, arg);
+#else
+    struct thread_start *start = malloc(sizeof(*start));
+    if (!start)
+        return SR_ERROR_CANT_ALLOC_MEMORY;
+    start->callback = callback;
+    start->argument = arg;
+    if (pthread_create(thread, NULL, thread_entry, start) != 0) {
+        free(start);
+        return SR_ERROR_CANT_CREATE_THREAD;
+    }
+#endif
     //if (thread->thread_handle == NULL)	// don't feel like porting this
     //	return SR_ERROR_CANT_CREATE_THREAD;
 
@@ -51,7 +77,7 @@ threadlib_waitforclose (THREAD_HANDLE *thread)
 }
 
 HSEM
-threadlib_create_sem ()
+threadlib_create_sem(void)
 {
     HSEM s;
     SemInit (s);
@@ -79,5 +105,6 @@ threadlib_signal_sem(HSEM *e)
 void
 threadlib_destroy_sem (HSEM *e)
 {
-    DestroyThread (*e);
+    (void)e;
+    SemDestroy (*e);
 }

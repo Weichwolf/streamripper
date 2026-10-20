@@ -1,3 +1,115 @@
+Streamripper 1.65.0-rc.1 (maintained fork)
+=======================================
+
+This release candidate modernizes the Linux command-line recorder. It supports
+HTTP/HTTPS MP3, ADTS AAC and Ogg/Vorbis, ICY titles, relative redirects, PLS/M3U
+playlists, Zeno station pages and the Radio Swiss Pop website. Audio is saved
+without transcoding. HLS/DASH, DRM, Opus and arbitrary website players are not
+supported. This is a release candidate, not a claim of universal compatibility.
+The historical Windows/Winamp projects have not been validated for this release.
+
+Build and test
+--------------
+
+Required: CMake >= 3.25, Ninja, pkg-config, a C11 compiler, GLib >= 2.52,
+libcurl >= 7.85 with TLS, libmad, libogg and libvorbis. Presets use Clang 19.
+Offline tests additionally use Python 3 and the openssl executable. Audio test
+fixtures are synthetic and included; ffmpeg is needed only to regenerate them.
+
+Debian/Ubuntu development packages:
+  sudo apt-get install clang-19 libclang-rt-19-dev cmake ninja-build pkg-config \
+    libglib2.0-dev libcurl4-openssl-dev libmad0-dev libogg-dev libvorbis-dev \
+    python3 openssl
+
+  make test                  # Debug, ASan + UBSan, warnings treated as errors
+  make release               # optimized build plus the same offline tests
+  make lint                  # clang-tidy-19 and ShellCheck, if installed
+  make PRESET=release install # install under ~/.local
+
+Equivalent CMake commands:
+  cmake --preset strict
+  cmake --build --preset strict
+  ctest --preset strict
+  cmake --preset release
+  cmake --build --preset release
+  ctest --preset release
+
+For another compiler, configure a separate build directory, for example:
+  cmake -S . -B build/gcc -G Ninja -DCMAKE_C_COMPILER=gcc
+  cmake --build build/gcc
+  ctest --test-dir build/gcc --output-on-failure
+
+Builds export compile_commands.json and use ccache if present. Both presets
+use -Wall -Wextra -Wpedantic -Werror, format and prototype checking, stack
+protection and Linux PIE/RELRO/NOW/noexecstack. Release uses -O2. Strict adds
+-O1 -g, ASan/UBSan and non-recovering sanitizer diagnostics. ThreadSanitizer is
+available separately with the thread preset and requires a compatible host.
+
+Recording
+---------
+
+  ./tools/record-radio progulus -d recordings/progulus
+  ./tools/record-radio armory -d recordings/armory
+  ./tools/record-radio courtyard -d recordings/courtyard
+  ./tools/record-radio swisspop -d recordings/swisspop
+
+Or pass a URL directly, quoted to protect shell query characters:
+  build/release/streamripper \
+    'http://centova.radioservers.biz:8063/listen.pls?sid=1' \
+    --codeset-metadata=auto -d recordings/progulus
+
+Use -l SECONDS for a bounded recording, and Ctrl-C to stop. A completed track
+is renamed into the station directory; the currently unfinished track remains
+under incomplete/. Some initial and final buffered audio may be omitted when
+stopping. Use -a FILE -A when a continuous show recording is more important than
+separate tracks. See streamripper.1 or -h for the complete option list.
+
+Metadata defaults to auto: valid UTF-8 is preserved, otherwise Windows-1252 is
+used for legacy streams. Explicit --codeset-metadata=ENCODING overrides this.
+Old configuration files can still force ISO-8859-1; use
+--codeset-metadata=auto (as the station helper does) to enable detection.
+Filenames use UTF-8 and ID3v2.3 text uses UTF-16 with a BOM. Truncation respects
+UTF-8 characters and UTF-16 surrogate pairs. ID3v1 cannot represent Unicode.
+
+The default browser User-Agent avoids rejection by the tested servers; -u
+still overrides it. TLS certificates are verified. CURL_CA_BUNDLE may point
+to a custom CA file. curl's standard proxy environment variables are supported,
+as are -p and the existing network-interface option. Redirects and nested
+playlists are bounded, and document/audio buffers have fixed upper limits.
+
+Split points
+------------
+
+Console output and CUE sheets use UTF-8.
+
+The default MP3 detector searches for a quiet interval around an ICY title
+change. --xs2 selects the adaptive detector. Both preserve frame boundaries,
+measure stereo without phase cancellation and use precise sample-time
+conversion. When no useful quiet interval is found, the search-window midpoint
+is used. Crossfades and imprecise broadcaster metadata can still require tuning
+--xs-search-window, --xs-offset and --xs-padding. AAC uses ADTS frame boundaries;
+it does not perform MP3-style silence detection.
+
+Release artifacts
+-----------------
+
+  cpack --config build/release/CPackConfig.cmake -B build/packages
+
+The binary tarball installs bin/, share/man/ and share/doc/. It is dynamically
+linked to the platform's GLib, curl, Ogg/Vorbis and libc; libmad is linked
+statically in the release preset. The locally built Debian 13 x86_64 binary is
+not a universal Linux executable. Prefer a source build on other distributions.
+SHA256SUMS accompanies published release files. COPYING contains the license.
+
+Validation includes deterministic HTTP/TLS fixtures, chunking, relative
+redirects and playlists, timeout/error paths, Unicode titles/filenames/ID3,
+both MP3 splitters, stereo phase cancellation, corrupt input and Ogg/Vorbis.
+Live-network checks are deliberately separate from offline CI. See TESTING
+for the release validation record and practical limitations.
+
+Historical upstream README
+==========================
+
 STREAMRIPPER(1)                                                STREAMRIPPER(1)
 
 

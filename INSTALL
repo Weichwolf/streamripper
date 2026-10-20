@@ -1,3 +1,6 @@
+Current Linux builds use CMake presets. Follow the Build and test section
+in README; the historical instructions below describe older releases.
+
 Basic Installation
 ==================
 

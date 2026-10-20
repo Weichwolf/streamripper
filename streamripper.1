@@ -5,19 +5,25 @@
 .\"    Manual: 
 .\"    Source: 
 .\"
-.TH "STREAMRIPPER" "1" "03/08/2009" "" ""
+.TH "STREAMRIPPER" "1" "2026-10-20" "1.65.0-rc.1" ""
 .\" disable hyphenation
 .nh
 .\" disable justification (adjust text to left margin only)
 .ad l
 .SH "NAME"
-streamripper \- rip shoutcast radio streams to mp3 files
+streamripper \- record HTTP/HTTPS internet radio
 .SH "SYNOPSIS"
 \fIstreamripper\fR URL [options]
 .sp
 .SH "DESCRIPTION"
 Streamripper records shoutcast and icecast compatible streams, in their native format\&. The following formats are supported: mp3, nsv, aac, and ogg\&. The meta data within the stream are interpreted to determine the beginning and end of each song, and stores the songs on your hard disk as individual files\&. In addition, streamripper includes a relay server for listening to the station while you are recording\&.
 .sp
+.SH "CURRENT RELEASE"
+This release supports MP3, ADTS AAC and Ogg/Vorbis over HTTP and verified HTTPS, PLS/M3U playlists, Zeno station pages and Radio Swiss Pop. HLS/DASH, DRM and Opus are not supported.
+.PP
+Metadata encoding can be selected with \fB\-\-codeset-metadata=auto\fR. Valid UTF-8 is preserved; legacy input falls back to Windows-1252. Existing explicit encoding settings remain effective. Filenames use UTF-8; ID3v2.3 uses UTF-16 or Latin-1. ID3v1 is limited to Latin-1.
+.PP
+The default User-Agent is compatible with the tested radio servers. Override with \fB\-u\fR. TLS certificates are verified; \fBCURL_CA_BUNDLE\fR can specify a custom CA file.
 .SH "OPTIONS"
 .PP
 \-h
@@ -65,11 +71,8 @@ By default the output files are put in a directory that has the same name as the
 .fi
 .RE
 .sp
-.it 1 an-trap
-.nr an-no-space-flag 1
-.nr an-break-flag 1
-.br
-Note
+.PP
+.B Note
 On windows you may be required to supply an extra \fI%\fR because the symbol is consumed by the shell\&. Therefore, you would put "%%S/%%A/%%T" instead of "%S/%A/%T"\&.
 .sp
 

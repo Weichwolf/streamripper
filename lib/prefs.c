@@ -26,12 +26,13 @@
 #include "rip_manager.h"
 #include "mchar.h"
 #include "prefs.h"
+#include "http_stream.h"
 #include "debug.h"
 
 /******************************************************************************
  * Private variables
  *****************************************************************************/
-#define DEFAULT_USER_AGENT ("streamripper/" SRVERSION)
+#define DEFAULT_USER_AGENT SR_DEFAULT_USER_AGENT
 static GKeyFile *m_key_file = NULL;
 
 enum PrefsVersion {
@@ -252,7 +253,7 @@ prefs_save (void)
 	rather than --codeset-filesys here. */
     fp = g_fopen (prefs_fn, "w");
     if (fp) {
-	debug_printf ("Writing, len = %d\n", keyfile_contents_len);
+	debug_printf ("Writing, len = %lu\n", keyfile_contents_len);
 	fwrite (keyfile_contents, 1, keyfile_contents_len, fp);
 	fclose (fp);
     } else {
@@ -426,8 +427,8 @@ debug_stream_prefs (STREAM_PREFS* prefs)
     debug_printf ("useragent = %s\n", prefs->useragent);
     debug_printf ("relay_port = %d\n", prefs->relay_port);
     debug_printf ("max_port = %d\n", prefs->max_port);
-    debug_printf ("max_connections = %d\n", prefs->max_connections);
-    debug_printf ("maxMB_rip_size = %d\n", prefs->maxMB_rip_size);
+    debug_printf ("max_connections = %lu\n", prefs->max_connections);
+    debug_printf ("maxMB_rip_size = %lu\n", prefs->maxMB_rip_size);
     debug_printf ("auto_reconnect = %d\n",
 		  OPT_FLAG_ISSET (prefs->flags, OPT_AUTO_RECONNECT));
     debug_printf ("make_relay = %d\n",
@@ -446,12 +447,12 @@ debug_stream_prefs (STREAM_PREFS* prefs)
 		  OPT_FLAG_ISSET (prefs->flags, OPT_SINGLE_FILE_OUTPUT));
     debug_printf ("use_ext_cmd = %d\n",
 		  OPT_FLAG_ISSET (prefs->flags, OPT_EXTERNAL_CMD));
-    debug_printf ("timeout = %d\n", prefs->timeout);
-    debug_printf ("dropcount = %d\n", prefs->dropcount);
+    debug_printf ("timeout = %lu\n", prefs->timeout);
+    debug_printf ("dropcount = %lu\n", prefs->dropcount);
     debug_printf ("count_start = %d\n", prefs->count_start);
     debug_printf ("overwrite = %s\n", 
 		  overwrite_opt_to_string(prefs->overwrite));
-};
+}
 
 
 /******************************************************************************

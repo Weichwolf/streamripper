@@ -15,6 +15,7 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
+#include "parse.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -151,7 +152,9 @@ use_default_rules (RIP_MANAGER_INFO* rmi)
 
     /* compile regular expressions */
     for (rulep = rmi->parse_rules; rulep->cmd; rulep++) {
-	compile_rule (rulep, rulep->match);
+        rulep->match = g_strdup(rulep->match);
+        rulep->subst = g_strdup(rulep->subst);
+        compile_rule(rulep, rulep->match);
     }
 }
 
@@ -164,8 +167,9 @@ copy_rule_result (mchar* dest, GMatchInfo* match_info, int idx)
 
     debug_printf ("copy_rule_result: idx=%d\n", idx);
     if (idx > 0 && idx <= MAX_SUBMATCHES) {
-	mstrncpy (dest, match, MAX_METADATA_LEN);
+	mstrncpy (dest, match, MAX_TRACK_LEN);
     }
+    g_free(match);
 }
 #else
 static void
@@ -328,7 +332,6 @@ init_metadata_parser (RIP_MANAGER_INFO* rmi, char* rules_file)
 	if (!*rbp) continue;
 
 	/* Get command */
-	got_command = 0;
 	switch (*rbp++) {
 	case 'm':
 	    got_command = 1;
@@ -414,12 +417,12 @@ init_metadata_parser (RIP_MANAGER_INFO* rmi, char* rules_file)
     fclose(fp);
 }
 
-void
+static void
 compose_metadata (RIP_MANAGER_INFO* rmi, TRACK_INFO* ti)
 {
     int num_bytes;
     unsigned char num_16_bytes;
-    mchar w_composed_metadata[MAX_METADATA_LEN+1];
+    mchar w_composed_metadata[MAX_METADATA_LEN+1] = {0};
 
     if (ti->have_track_info) {
 	if (ti->artist[0]) {
@@ -448,7 +451,9 @@ void
 parse_metadata (RIP_MANAGER_INFO* rmi, TRACK_INFO* ti)
 {
     int i;
-    int eflags;
+#if !USE_GLIB_REGEX
+    int eflags = 0;
+#endif
     int rc;
     int matched;
     mchar query_string[MAX_TRACK_LEN];
@@ -476,7 +481,7 @@ parse_metadata (RIP_MANAGER_INFO* rmi, TRACK_INFO* ti)
 #if !defined (USE_GLIB_REGEX)
 	regmatch_t pmatch[MAX_SUBMATCHES+1];
 #endif
-	eflags = 0;
+
 	if (rulep->cmd == PARSERULE_CMD_MATCH) {
 	    debug_mprintf (m_("Testing match rule: ") m_S m_(" vs. ") m_S m_("\n"),
 			   query_string, rulep->match);
@@ -534,6 +539,7 @@ parse_metadata (RIP_MANAGER_INFO* rmi, TRACK_INFO* ti)
 
 		rc = g_regex_match (rulep->reg, query_string, 0, &match_info);
 		if (rc == 0) {
+                    g_match_info_free(match_info);
 		    /* Didn't match rule. */
 		    continue;
 		}
@@ -551,7 +557,7 @@ parse_metadata (RIP_MANAGER_INFO* rmi, TRACK_INFO* ti)
 		copy_rule_result (ti->year, match_info, rulep->year_idx);
 		g_match_info_free (match_info);
 #else
-    		eflags = 0;
+
 		rc = mregexec (rulep->reg, query_string, MAX_SUBMATCHES+1, 
 			       pmatch, eflags);
 		if (rc != 0) {
@@ -592,6 +598,7 @@ parse_metadata (RIP_MANAGER_INFO* rmi, TRACK_INFO* ti)
 			   query_string, rulep->match);
 	    rc = g_regex_match (rulep->reg, query_string, 0, &match_info);
 	    if (rc == 0) {
+                g_match_info_free(match_info);
 		/* Didn't match rule. */
 		continue;
 	    }
@@ -612,6 +619,7 @@ parse_metadata (RIP_MANAGER_INFO* rmi, TRACK_INFO* ti)
 	    g_free (tmp);
 	    g_match_info_free (match_info);
 	    mstrncpy (query_string, subst_string, MAX_TRACK_LEN);
+            g_free(subst_string);
 #else
 	    mchar subst_string[MAX_TRACK_LEN];
 	    int used, left;
@@ -650,6 +658,14 @@ parse_metadata (RIP_MANAGER_INFO* rmi, TRACK_INFO* ti)
 void
 parser_free (RIP_MANAGER_INFO* rmi)
 {
+    if (rmi->parse_rules) {
+        for (Parse_Rule *rule = rmi->parse_rules; rule->cmd; ++rule) {
+            g_free(rule->match);
+            g_free(rule->subst);
+            if (rule->reg)
+                g_regex_unref(rule->reg);
+        }
+    }
     free (rmi->parse_rules);
     rmi->parse_rules = 0;
 }

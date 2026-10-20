@@ -99,6 +99,8 @@ typedef struct {
 /*****************************************************************************
 * Functions
 *****************************************************************************/
+static void warn(char *format, ...) G_GNUC_PRINTF(1, 2);
+
 static void
 warn (char *format, ...)
 {
@@ -183,188 +185,28 @@ vorbis_process (
                 if (inf->vc.comments > 0)
                     debug_printf ("User comments section follows...\n");
 
-                for (i = 0; i < inf->vc.comments; i++) {
-                    char *sep = strchr (inf->vc.user_comments[i], '=');
-                    char *decoded;
-                    int j;
-                    int broken = 0;
-                    unsigned char *val;
-                    int bytes;
-                    int remaining;
-
-                    if (sep == NULL) {
-                        warn (_("Warning: Comment %d in stream %d is invalidly "
-                                "formatted, does not contain '=': \"%s\"\n"),
-			    i, stream->num, inf->vc.user_comments[i]);
+                for (i = 0; i < inf->vc.comments; ++i) {
+                    const char *comment = inf->vc.user_comments[i];
+                    const char *separator = memchr(comment, '=', (size_t)inf->vc.comment_lengths[i]);
+                    if (!separator)
                         continue;
-                    }
-
-                    for (j = 0; j < sep - inf->vc.user_comments[i]; j++) {
-                        if (inf->vc.user_comments[i][j] < 0x20 ||
-                            inf->vc.user_comments[i][j] > 0x7D) {
-                            warn (_("Warning: Invalid comment fieldname in "
-                                    "comment %d (stream %d): \"%s\"\n"),
-				i, stream->num, inf->vc.user_comments[i]);
-                            broken = 1;
-                            break;
-                        }
-                    }
-
-                    if (broken)
-                        continue;
-
-                    val = (unsigned char*) inf->vc.user_comments[i];
-
-                    j = sep - inf->vc.user_comments[i] + 1;
-                    while (j < inf->vc.comment_lengths[i]) {
-                        remaining = inf->vc.comment_lengths[i] - j;
-                        if ((val[j] & 0x80) == 0)
-                            bytes = 1;
-                        else if ((val[j] & 0x40) == 0x40) {
-                            if ((val[j] & 0x20) == 0)
-                                bytes = 2;
-                            else if ((val[j] & 0x10) == 0)
-                                bytes = 3;
-                            else if ((val[j] & 0x08) == 0)
-                                bytes = 4;
-                            else if ((val[j] & 0x04) == 0)
-                                bytes = 5;
-                            else if ((val[j] & 0x02) == 0)
-                                bytes = 6;
-                            else {
-                                warn (_("Warning: Illegal UTF-8 sequence in "
-                                        "comment %d (stream %d): length "
-                                        "marker wrong\n"),
-				    i, stream->num);
-                                broken = 1;
-                                break;
-                            }
-                        } else   {
-                            warn (_("Warning: Illegal UTF-8 sequence in "
-				    "comment %d (stream %d): length marker "
-				    "wrong\n"),
-				i, stream->num);
-                            broken = 1;
-                            break;
-                        }
-
-                        if (bytes > remaining) {
-                            warn (_("Warning: Illegal UTF-8 sequence in "
-				    "comment %d (stream %d): too few bytes\n"),
-				i, stream->num);
-                            broken = 1;
-                            break;
-                        }
-
-                        switch (bytes) {
-                        case 1:
-                            /* No more checks needed */
-                            break;
-                        case 2:
-                            if ((val[j + 1] & 0xC0) != 0x80)
-                                broken = 1;
-                            if ((val[j] & 0xFE) == 0xC0)
-                                broken = 1;
-                            break;
-                        case 3:
-                            if (!((val[j] == 0xE0 && val[j + 1] >= 0xA0 &&
-					val[j + 1] <= 0xBF &&
-					(val[j + 2] & 0xC0) == 0x80) ||
-				    (val[j] >= 0xE1 && val[j] <= 0xEC &&
-					(val[j + 1] & 0xC0) == 0x80 &&
-					(val[j + 2] & 0xC0) == 0x80) ||
-				    (val[j] == 0xED && val[j + 1] >= 0x80 &&
-					val[j + 1] <= 0x9F &&
-					(val[j + 2] & 0xC0) == 0x80) ||
-				    (val[j] >= 0xEE && val[j] <= 0xEF &&
-					(val[j + 1] & 0xC0) == 0x80 &&
-					(val[j + 2] & 0xC0) == 0x80)))
-                                broken = 1;
-                            if (val[j] == 0xE0 && (val[j + 1] & 0xE0) == 0x80)
-                                broken = 1;
-                            break;
-                        case 4:
-                            if (!((val[j] == 0xF0 && val[j + 1] >= 0x90 &&
-					val[j + 1] <= 0xBF &&
-					(val[j + 2] & 0xC0) == 0x80 &&
-					(val[j + 3] & 0xC0) == 0x80) ||
-				    (val[j] >= 0xF1 && val[j] <= 0xF3 &&
-					(val[j + 1] & 0xC0) == 0x80 &&
-					(val[j + 2] & 0xC0) == 0x80 &&
-					(val[j + 3] & 0xC0) == 0x80) ||
-				    (val[j] == 0xF4 && val[j + 1] >= 0x80 &&
-					val[j + 1] <= 0x8F &&
-					(val[j + 2] & 0xC0) == 0x80 &&
-					(val[j + 3] & 0xC0) == 0x80)))
-                                broken = 1;
-                            if (val[j] == 0xF0 && (val[j + 1] & 0xF0) == 0x80)
-                                broken = 1;
-                            break;
-			    /* 5 and 6 aren't actually allowed at this point*/
-                        case 5:
-                            broken = 1;
-                            break;
-                        case 6:
-                            broken = 1;
-                            break;
-                        }
-
-                        if (broken) {
-                            warn (_ ("Warning: Illegal UTF-8 sequence in comment "
-				    "%d (stream %d): invalid sequence\n"),
-				i, stream->num);
-                            broken = 1;
-                            break;
-                        }
-
-                        j += bytes;
-                    }
-
-                    if (!broken) {
-                        if (utf8_decode (sep + 1, &decoded) < 0) {
-                            warn (_ ("Warning: Failure in utf8 decoder. This "
-				    "should be impossible\n"));
-                            continue;
-                        }
-                        *sep = 0;
-                        debug_printf ("\t%s=%s\n",
-			    inf->vc.user_comments[i], decoded);
-
-                        /* GCS FIX: Need case insensitive compare */
-                        if (!strcmp (inf->vc.user_comments[i], "artist")
-                            || !strcmp (inf->vc.user_comments[i], "ARTIST")
-                            || !strcmp (inf->vc.user_comments[i], "Artist")) {
-                            /* GCS FIX: This is a bit funky, maybe I need
-                               to get rid of the ogg built-in utf8 decoder */
-                            gstring_from_string (rmi, ti->artist,
-				MAX_TRACK_LEN,
-				decoded, CODESET_LOCALE);
-                        } else if (!strcmp (inf->vc.user_comments[i], "title")
-			    || !strcmp (inf->vc.user_comments[i], "TITLE")
-			    || !strcmp (inf->vc.user_comments[i], "Title")) {
-                            /* GCS FIX: This is a bit funky, maybe I need
-                               to get rid of the ogg built-in utf8 decoder */
-                            gstring_from_string (rmi, ti->title, MAX_TRACK_LEN,
-				decoded, CODESET_LOCALE);
-                            ti->have_track_info = 1;
-                        } else if (!strcmp (inf->vc.user_comments[i], "album")
-			    || !strcmp (inf->vc.user_comments[i], "ALBUM")
-			    || !strcmp (inf->vc.user_comments[i], "Album")) {
-                            /* GCS FIX: This is a bit funky, maybe I need
-                               to get rid of the ogg built-in utf8 decoder */
-                            gstring_from_string (rmi, ti->album, MAX_TRACK_LEN,
-				decoded, CODESET_LOCALE);
-                        } else if (!strcmp (inf->vc.user_comments[i], "tracknumber")
-			    || !strcmp (inf->vc.user_comments[i], "TRACKNUMBER")
-			    || !strcmp (inf->vc.user_comments[i], "Tracknumber")) {
-                            /* GCS FIX: This is a bit funky, maybe I need
-                               to get rid of the ogg built-in utf8 decoder */
-                            gstring_from_string (rmi, ti->track_p,
-				MAX_TRACK_LEN,
-				decoded, CODESET_LOCALE);
-                        }
-                        free (decoded);
-                    }
+                    char *key = g_strndup(comment, (gsize)(separator - comment));
+                    char *value = g_strndup(separator + 1,
+                        (gsize)inf->vc.comment_lengths[i] - (gsize)(separator - comment) - 1);
+                    mchar *field = NULL;
+                    if (!g_ascii_strcasecmp(key, "artist"))
+                        field = ti->artist;
+                    else if (!g_ascii_strcasecmp(key, "title")) {
+                        field = ti->title;
+                        ti->have_track_info = 1;
+                    } else if (!g_ascii_strcasecmp(key, "album"))
+                        field = ti->album;
+                    else if (!g_ascii_strcasecmp(key, "tracknumber"))
+                        field = ti->track_p;
+                    if (field)
+                        gstring_from_string(rmi, field, MAX_TRACK_LEN, value, CODESET_UTF8);
+                    g_free(value);
+                    g_free(key);
                 }
                 /* Done looping through vorbis comments.  If we didn't find
 		   a title, give a default title. */
@@ -384,7 +226,7 @@ vorbis_process (
                 warn (_("Warning: granulepos in stream %d decreases from %I64d to %I64d"),
 		    stream->num, inf->lastgranulepos, gp);
 #else
-	    warn (_("Warning: granulepos in stream %d decreases from %lld to %lld"),
+	    warn (_("Warning: granulepos in stream %d decreases from %ld to %ld"),
 		stream->num, inf->lastgranulepos, gp);
 #endif
             inf->lastgranulepos = gp;
@@ -406,10 +248,10 @@ vorbis_end (stream_processor *stream)
     double bitrate, time;
 
     /* This should be lastgranulepos - startgranulepos, or something like that*/
-    time = (double) inf->lastgranulepos / inf->vi.rate;
+    time = inf->vi.rate > 0 ? (double)inf->lastgranulepos / inf->vi.rate : 0;
     minutes = (long) time / 60;
     seconds = (long) time - minutes * 60;
-    bitrate = inf->bytes * 8 / time / 1000.0;
+    bitrate = time > 0 ? inf->bytes * 8 / time / 1000.0 : 0;
 
 #ifdef _WIN32
     debug_printf ("Vorbis stream %d:\n"
@@ -419,7 +261,7 @@ vorbis_end (stream_processor *stream)
                   stream->num, inf->bytes, minutes, seconds, bitrate);
 #else
     debug_printf ("Vorbis stream %d:\n"
-                  "\tTotal data length: %lld bytes\n"
+                  "\tTotal data length: %ld bytes\n"
                   "\tPlayback length: %ldm:%02lds\n"
                   "\tAverage bitrate: %f kbps\n",
                   stream->num, inf->bytes, minutes, seconds, bitrate);
@@ -429,6 +271,7 @@ vorbis_end (stream_processor *stream)
     vorbis_info_clear (&inf->vi);
 
     free (stream->data);
+    stream->data = NULL;
 }
 
 static void
@@ -463,15 +306,17 @@ ripogg_get_checksum (ogg_page *op)
     return op->header[22] |
            (op->header[23] << 8) |
            (op->header[24] << 16) |
-           (op->header[25] << 24);
+           ((uint32_t)op->header[25] << 24);
 }
 
-void
+error_code
 ripogg_process_chunk (RIP_MANAGER_INFO* rmi,
     const char* chunk,
     u_long size,
     TRACK_INFO* ti)
 {
+    if (!rmi || !chunk || !ti)
+        return SR_ERROR_INVALID_PARAM;
     int header;
     int ret;
     char *buffer;
@@ -483,7 +328,7 @@ ripogg_process_chunk (RIP_MANAGER_INFO* rmi,
     Cbuf3 *cbuf3 = &rmi->cbuf3;
     Ogg_page_reference *opr;
 
-    debug_printf ("-- ripogg_process_chunk (%d)\n", size);
+    debug_printf ("-- ripogg_process_chunk (%lu)\n", size);
 
     /* Find cbuf3 location of beginning of new page (if new page is found) */
     if (!cbuf3->ogg_page_refs->tail) {
@@ -491,13 +336,12 @@ ripogg_process_chunk (RIP_MANAGER_INFO* rmi,
         cbuf3_page_loc.node = cbuf3->buf->tail;
         cbuf3_page_loc.offset = 0;
     } else {
-        Ogg_page_reference *opr;
         opr = (Ogg_page_reference*) cbuf3->ogg_page_refs->tail->data;
         cbuf3_pointer_add (cbuf3, &cbuf3_page_loc,
 	    &opr->m_cbuf3_loc, opr->m_page_len);
     }
-    debug_printf ("cbuf3_page_loc initialized to (%p,%d)\n",
-	cbuf3_page_loc.node, cbuf3_page_loc.offset);
+    debug_printf ("cbuf3_page_loc initialized to (%p,%lu)\n",
+	(void *)(cbuf3_page_loc.node), cbuf3_page_loc.offset);
 
     buffer = ogg_sync_buffer (&rmi->ogg_sync, size);
     memcpy (buffer, chunk, size);
@@ -522,18 +366,29 @@ ripogg_process_chunk (RIP_MANAGER_INFO* rmi,
             if (ogg_page_bos (&rmi->ogg_pg)) {
                 int rc;
                 ogg_packet packet;
+                if (rmi->stream.data)
+                    vorbis_end(&rmi->stream);
+                ogg_stream_clear(&rmi->stream.os);
                 ogg_stream_init (&rmi->stream.os,
 		    ogg_page_serialno (&rmi->ogg_pg));
                 ogg_stream_pagein (&rmi->stream.os, &rmi->ogg_pg);
                 rc = ogg_stream_packetout (&rmi->stream.os, &packet);
                 if (rc <= 0) {
                     printf ("Warning: Invalid header page, no packet found\n");
-                    exit (1);
+                    g_list_free_full(new_pages, free);
+                    return SR_ERROR_UNSUPPORTED_FORMAT;
                 } else if (packet.bytes >= 7
 		    && memcmp (packet.packet, "\001vorbis", 7) == 0) {
                     debug_printf ("Calling vorbis_start\n");
                     vorbis_start (&rmi->stream);
+                } else {
+                    g_list_free_full(new_pages, free);
+                    return SR_ERROR_UNSUPPORTED_FORMAT;
                 }
+            }
+            if (!rmi->stream.data) {
+                g_list_free_full(new_pages, free);
+                return SR_ERROR_PARSE_FAILURE;
             }
             header = vorbis_process (rmi, &rmi->stream, &rmi->ogg_pg, ti);
             if (ogg_page_eos (&rmi->ogg_pg)) {
@@ -546,7 +401,8 @@ ripogg_process_chunk (RIP_MANAGER_INFO* rmi,
             opr = (Ogg_page_reference*) malloc (sizeof (Ogg_page_reference));
             if (!opr) {
                 printf ("Malloc error\n");
-                exit (1);
+                g_list_free_full(new_pages, free);
+                return SR_ERROR_CANT_ALLOC_MEMORY;
             }
             opr->m_page_len = rmi->ogg_pg.header_len + rmi->ogg_pg.body_len;
             opr->m_page_flags = 0;
@@ -603,8 +459,8 @@ ripogg_process_chunk (RIP_MANAGER_INFO* rmi,
             }
 
             /* Assign page location within cbuf3 */
-            debug_printf ("Assigning page location (%p,%d)\n",
-		cbuf3_page_loc.node, cbuf3_page_loc.offset);
+            debug_printf ("Assigning page location (%p,%lu)\n",
+		(void *)(cbuf3_page_loc.node), cbuf3_page_loc.offset);
             opr->m_cbuf3_loc = cbuf3_page_loc;
 
 	    /* Advance cbuf3_pointer */
@@ -613,8 +469,8 @@ ripogg_process_chunk (RIP_MANAGER_INFO* rmi,
                overflow can only occur on the last page of the loop. */
             cbuf3_pointer_add (cbuf3, &cbuf3_page_loc, &opr->m_cbuf3_loc,
 		opr->m_page_len);
-            debug_printf ("   -> (%p,%d)\n",
-		cbuf3_page_loc.node, cbuf3_page_loc.offset);
+            debug_printf ("   -> (%p,%lu)\n",
+		(void *)(cbuf3_page_loc.node), cbuf3_page_loc.offset);
 
             /* *****************************************************
 	       Fix gaps in page numbers - we will first set the page number
@@ -653,10 +509,10 @@ ripogg_process_chunk (RIP_MANAGER_INFO* rmi,
 
             debug_printf (
 		"OGG_PAGE\n"
-		"  header_len = %d\n"
-		"  body_len = %d\n"
+		"  header_len = %ld\n"
+		"  body_len = %ld\n"
 		"  serial no = %d\n"
-		"  page no = %d\n"
+		"  page no = %ld\n"
 		"  bos? = %d\n"
 		"  eos? = %d\n",
 		rmi->ogg_pg.header_len,
@@ -689,6 +545,7 @@ ripogg_process_chunk (RIP_MANAGER_INFO* rmi,
 	rmi->ogg_sync.headerbytes,
 	rmi->ogg_sync.bodybytes);
     //    return 1;
+    return SR_SUCCESS;
 }
 
 void
@@ -702,14 +559,37 @@ void
 ripogg_init (RIP_MANAGER_INFO* rmi)
 {
     ogg_sync_init (&rmi->ogg_sync);
+    rmi->ogg_initialized = 1;
     memset (&rmi->stream, 0, sizeof(stream_processor));
     rmi->ogg_curr_header = 0;
     rmi->ogg_curr_header_len = 0;
 }
 
+void
+ripogg_destroy(RIP_MANAGER_INFO *rmi)
+{
+    if (!rmi->ogg_initialized)
+        return;
+    if (rmi->stream.data)
+        vorbis_end(&rmi->stream);
+    ogg_stream_clear(&rmi->stream.os);
+    ogg_sync_clear(&rmi->ogg_sync);
+    if (rmi->cbuf3.ogg_page_refs) {
+        for (GList *node = rmi->cbuf3.ogg_page_refs->head; node; node = node->next) {
+            Ogg_page_reference *page = node->data;
+            if (page->m_header_buf_ptr == rmi->ogg_curr_header)
+                page->m_header_buf_ptr = NULL;
+        }
+    }
+    free(rmi->ogg_curr_header);
+    rmi->ogg_curr_header = NULL;
+    rmi->ogg_curr_header_len = 0;
+    rmi->ogg_initialized = 0;
+}
+
 #else
 
-void
+error_code
 ripogg_process_chunk (RIP_MANAGER_INFO* rmi,
                       const char* chunk,
                       u_long size,

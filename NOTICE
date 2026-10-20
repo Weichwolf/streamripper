@@ -1,0 +1,13 @@
+Streamripper is distributed under GPL-2.0-or-later; see COPYING and the
+copyright notices in individual source files. Original authors and contributors
+are acknowledged in README and THANKS.
+
+Release-preset Linux binaries link libmad 0.15.1b statically. libmad is copyright
+Robert Leslie and is distributed under the GNU GPL. The release includes a
+companion source archive containing the corresponding Debian libmad source
+package (0.15.1b-11, used by the 0.15.1b-11+b1 development package).
+
+GLib, libcurl, libogg, libvorbis and the C runtime are dynamically linked system
+dependencies; their notices and source packages are provided by their projects
+and operating-system packages. These libraries are not bundled in the binary
+tarball.

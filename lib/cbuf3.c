@@ -64,6 +64,7 @@ cbuf3_init (struct cbuf3 *cbuf3,
     //    cbuf2->song_page_done = 0;   /* OGG only */
 
     cbuf3->sem = threadlib_create_sem();
+    cbuf3->sem_initialized = 1;
     threadlib_signal_sem (&cbuf3->sem);
 
     /* Allocate chunks */
@@ -76,7 +77,7 @@ error_code
 cbuf3_allocate_minimum (struct cbuf3 *cbuf3, 
 			unsigned long num_chunks)
 {
-    int i;
+    unsigned long i;
 
     debug_printf ("Allocating cbuf3\n");
 
@@ -112,6 +113,24 @@ cbuf3_destroy (struct cbuf3 *cbuf3)
 {
     char *c;
 
+    if (cbuf3->write_list) {
+        Writer *writer;
+        while ((writer = g_queue_pop_head(cbuf3->write_list))) {
+            if (writer->m_file != INVALID_FHANDLE)
+#if WIN32
+                CloseHandle(writer->m_file);
+#else
+                close(writer->m_file);
+#endif
+            free(writer);
+        }
+        g_queue_free(cbuf3->write_list);
+        cbuf3->write_list = NULL;
+    }
+    if (cbuf3->metadata_list) {
+        g_queue_free_full(cbuf3->metadata_list, free);
+        cbuf3->metadata_list = NULL;
+    }
     /* Remove buffer */
     if (cbuf3->buf) {
 	while ((c = g_queue_pop_head (cbuf3->buf)) != 0) {
@@ -130,13 +149,21 @@ cbuf3_destroy (struct cbuf3 *cbuf3)
 	cbuf3->free_list = 0;
     }
 
-    /* Remove ogg page references */
     if (cbuf3->ogg_page_refs) {
-	while ((c = g_queue_pop_head (cbuf3->ogg_page_refs)) != 0) {
-	    free (c);
-	}
-	g_queue_free (cbuf3->ogg_page_refs);
-	cbuf3->ogg_page_refs = 0;
+        GHashTable *headers = g_hash_table_new(g_direct_hash, g_direct_equal);
+        Ogg_page_reference *page;
+        while ((page = g_queue_pop_head(cbuf3->ogg_page_refs))) {
+            if (page->m_header_buf_ptr && g_hash_table_add(headers, page->m_header_buf_ptr))
+                free(page->m_header_buf_ptr);
+            free(page);
+        }
+        g_hash_table_unref(headers);
+        g_queue_free(cbuf3->ogg_page_refs);
+        cbuf3->ogg_page_refs = NULL;
+    }
+    if (cbuf3->sem_initialized) {
+        threadlib_destroy_sem(&cbuf3->sem);
+        cbuf3->sem_initialized = 0;
     }
 }
 
@@ -189,11 +216,11 @@ cbuf3_insert_node (struct cbuf3 *cbuf3, GList *node)
     g_queue_push_tail_link (cbuf3->buf, node);
 
     for (i = 0, p = cbuf3->buf->head; p; i++, p = p->next) {
-	debug_printf ("[%3d]  %p, %p\n", i, p, p->data);
+	debug_printf ("[%3d]  %p, %p\n", i, (void *)(p), p->data);
     }
-    debug_printf ("filled = %d x %d = %d\n", i, 
+    debug_printf ("filled = %d x %lu = %lu\n", i,
 	cbuf3->chunk_size, i * cbuf3->chunk_size);
-    debug_printf ("size   = %d x %d = %d\n", cbuf3->num_chunks, 
+    debug_printf ("size   = %lu x %lu = %lu\n", cbuf3->num_chunks,
 	cbuf3->chunk_size, cbuf3->num_chunks * cbuf3->chunk_size);
 
     threadlib_signal_sem (&cbuf3->sem);
@@ -216,18 +243,18 @@ cbuf3_ogg_remove_old_page_references (Cbuf3 *cbuf3)
 {
     Ogg_page_reference *opr;
 
-    if (!cbuf3_is_full (cbuf3)) {
-	return;
+    if (!cbuf3_is_full (cbuf3) || !cbuf3->ogg_page_refs->head) {
+	return SR_SUCCESS;
     }
 
     /* Loop through page references, starting at head, looking for 
        opr which point to the head node in the buffer */
     opr = (Ogg_page_reference *) cbuf3->ogg_page_refs->head->data;
     debug_printf ("Testing old page references:\n"
-	"  opr head = (%p,%d)\n"
+	"  opr head = (%p,%lu)\n"
 	"  cbuf3 head = (%p)\n",
-	opr->m_cbuf3_loc.node, opr->m_cbuf3_loc.offset,
-	cbuf3->buf->head);
+	(void *)(opr->m_cbuf3_loc.node), opr->m_cbuf3_loc.offset,
+	(void *)(cbuf3->buf->head));
     while (cbuf3->ogg_page_refs->head 
 	&& (opr = (Ogg_page_reference *) cbuf3->ogg_page_refs->head->data)
 	&& (opr->m_cbuf3_loc.node == cbuf3->buf->head))
@@ -235,8 +262,8 @@ cbuf3_ogg_remove_old_page_references (Cbuf3 *cbuf3)
 	/* Remove opr from the queue */
 	opr = g_queue_pop_head (cbuf3->ogg_page_refs);
 
-	debug_printf ("Removed ogg page reference: [%p,%5d,%5d]\n",
-	    opr->m_cbuf3_loc.node,
+	debug_printf ("Removed ogg page reference: [%p,%5lu,%5lu]\n",
+	    (void *)(opr->m_cbuf3_loc.node),
 	    opr->m_cbuf3_loc.offset,
 	    opr->m_page_len);
 
@@ -258,6 +285,7 @@ cbuf3_ogg_remove_old_page_references (Cbuf3 *cbuf3)
 	/* Free the opr */
 	free (opr);
     }
+    return SR_SUCCESS;
     return SR_SUCCESS;
 }
 
@@ -341,13 +369,13 @@ cbuf3_get_tail (
     out_ptr->offset = cbuf3->chunk_size;
 }
 
-void
+static void
 cbuf3_pointer_copy (
     struct cbuf3_pointer *out_ptr, 
     struct cbuf3_pointer *in_ptr)
 {
     out_ptr->node = in_ptr->node;
-    out_ptr->offset = out_ptr->offset;
+    out_ptr->offset = in_ptr->offset;
 }
 
 error_code
@@ -356,7 +384,7 @@ cbuf3_pointer_add (struct cbuf3 *cbuf3,
 		   struct cbuf3_pointer *in_ptr, 
 		   long len)
 {
-    debug_printf ("add: %p,%d + %d\n", in_ptr->node, in_ptr->offset, len);
+    debug_printf ("add: %p,%lu + %ld\n", (void *)(in_ptr->node), in_ptr->offset, len);
     out_ptr->node = in_ptr->node;
     out_ptr->offset = in_ptr->offset;
 
@@ -456,19 +484,20 @@ cbuf3_set_uint32 (struct cbuf3 *cbuf3,
     return SR_SUCCESS;
 }
 
-void
+static void
 cbuf3_debug_ogg_page_ref (struct ogg_page_reference *opr, void *user_data)
 {
-    debug_printf ("  chk/off/len: [%p,%5d,%5d] hdr: [%p,%5d] flg: %2d\n", 
-		  opr->m_cbuf3_loc.node,
+    (void)user_data;
+    debug_printf ("  chk/off/len: [%p,%5lu,%5lu] hdr: [%p,%5lu] flg: %2lu\n",
+		  (void *)(opr->m_cbuf3_loc.node),
 		  opr->m_cbuf3_loc.offset,
 		  opr->m_page_len,
-		  opr->m_header_buf_ptr,
+		  (void *)(opr->m_header_buf_ptr),
 		  opr->m_header_buf_len,
 		  opr->m_page_flags);
 }
 
-void
+static void
 cbuf3_debug_ogg_page_list (struct cbuf3 *cbuf3)
 {
     debug_printf ("Ogg page references:\n");
@@ -552,7 +581,7 @@ cbuf3_initialize_relay_client_ptr (struct cbuf3 *cbuf3,
 	}
 	opr = (Ogg_page_reference *) ogg_page_ptr->data;
 	burst_amt += opr->m_page_len;
-	debug_printf ("OGG_ADD_RELAY_ENTRY: BA=%d\n", burst_amt);
+	debug_printf ("OGG_ADD_RELAY_ENTRY: BA=%lu\n", burst_amt);
 
 	while (burst_amt < burst_request) {
 	    if (!ogg_page_ptr->prev) {
@@ -562,7 +591,7 @@ cbuf3_initialize_relay_client_ptr (struct cbuf3 *cbuf3,
 	    ogg_page_ptr = ogg_page_ptr->prev;
 	    opr = (Ogg_page_reference *) ogg_page_ptr->data;
 	    burst_amt += opr->m_page_len;
-	    debug_printf ("OGG_ADD_RELAY_ENTRY: BA=%d\n", burst_amt);
+	    debug_printf ("OGG_ADD_RELAY_ENTRY: BA=%lu\n", burst_amt);
 	}
 
 	/* If the desired ogg page is a header page, spin forward 
@@ -636,7 +665,7 @@ cbuf3_extract_relay (Cbuf3 *cbuf3,
     if (node->next == NULL) {
 	ec = SR_ERROR_BUFFER_EMPTY;
     } else {
-	debug_printf ("Client %d node %p\n", relay_client->m_sock, node);
+	debug_printf ("Client %d node %p\n", relay_client->m_sock, (void *)(node));
 	memcpy (relay_client->m_buffer, &chunk[offset], remaining);
 	relay_client->m_left_to_send = remaining;
 	relay_client->m_cbuf_ptr.node = node->next;
@@ -658,8 +687,8 @@ cbuf3_peek (Cbuf3 *cbuf3,
     int bidx = 0;
     Cbuf3_pointer cur;
 
-    debug_printf ("cbuf3_peek, %d bytes at cbuf3_ptr (%p,%d)\n",
-		  len, ptr->node, ptr->offset);
+    debug_printf ("cbuf3_peek, %lu bytes at cbuf3_ptr (%p,%lu)\n",
+		  len, (void *)(ptr->node), ptr->offset);
 
     cur.node = ptr->node;
     cur.offset = ptr->offset;
@@ -679,7 +708,7 @@ cbuf3_peek (Cbuf3 *cbuf3,
 	    this_len = len;
 	}
 
-	debug_printf ("Copying %d bytes (%d).\n", this_len, len);
+	debug_printf ("Copying %lu bytes (%lu).\n", this_len, len);
 
 	/* Peek */
 	memcpy (&buf[bidx], &chunk[cur.offset], this_len);

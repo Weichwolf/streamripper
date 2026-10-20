@@ -52,16 +52,16 @@ static void parse_arguments (STREAM_PREFS *prefs, int argc, char **argv);
 static void rip_callback (RIP_MANAGER_INFO* rmi, int message, void *data);
 static void parse_extended_options (STREAM_PREFS *prefs, char *rule);
 static void verify_splitpoint_rules (STREAM_PREFS *prefs);
-static void print_to_console (char* fmt, ...);
+static void print_to_console (char* fmt, ...) G_GNUC_PRINTF(1, 2);
 
 /*****************************************************************************
  * Private variables
  *****************************************************************************/
 static char m_buffer_chars[] = {'\\', '|', '/', '-', '*'}; /* for formating */
 //static RIP_MANAGER_INFO 	m_curinfo; /* from the rip_manager callback */
-static BOOL			m_started = FALSE;
-static BOOL			m_alldone = FALSE;
-static BOOL			m_got_sig = FALSE;
+static _Atomic int m_alldone = FALSE;
+static _Atomic int m_had_error = FALSE;
+static volatile sig_atomic_t m_got_sig = FALSE;
 static BOOL			m_dont_print = FALSE;
 static BOOL			m_print_stderr = FALSE;
 time_t				m_stop_time = 0;
@@ -80,7 +80,6 @@ time_t				m_stop_time = 0;
 int
 main (int argc, char *argv[])
 {
-    int ret;
     time_t temp_time;
     STREAM_PREFS prefs;
     RIP_MANAGER_INFO *rmi = 0;
@@ -97,7 +96,7 @@ main (int argc, char *argv[])
     rip_manager_init ();
 
     /* Launch the ripping thread */
-    if ((ret = rip_manager_start (&rmi, &prefs, rip_callback)) != SR_SUCCESS) {
+    if (rip_manager_start(&rmi, &prefs, rip_callback) != SR_SUCCESS) {
 	fprintf(stderr, "Couldn't connect to %s\n", prefs.url);
 	exit(1);
     }
@@ -121,15 +120,13 @@ main (int argc, char *argv[])
     rip_manager_stop (rmi);
     rip_manager_cleanup ();
 
-    return 0;
+    return m_had_error ? 1 : 0;
 }
 
 void
 catch_sig(int code)
 {
-    print_to_console ("\n");
-    if (!m_started)
-        exit(2);
+    (void)code;
     m_got_sig = TRUE;
 }
 
@@ -171,7 +168,11 @@ print_status (RIP_MANAGER_INFO *rmi)
     BOOL static printed_fullinfo = FALSE;
 
     if (m_dont_print)
-	return;
+        return;
+    gchar *valid_name = g_utf8_make_valid(rmi->callback_filename, -1);
+    glong characters = MIN((glong)50, g_utf8_strlen(valid_name, -1));
+    gchar *display_name = g_utf8_substring(valid_name, 0, characters);
+    g_free(valid_name);
 
     if (printed_fullinfo && rmi->callback_filename[0]) {
 
@@ -185,9 +186,9 @@ print_status (RIP_MANAGER_INFO *rmi)
 	    sprintf(status_str,"buffering - %c ",
 		    m_buffer_chars[buffering_tick]);
 
-	    print_to_console ("[%14s] %.50s\r",
+	    print_to_console ("[%14s] %s\r",
 			      status_str,
-			      rmi->callback_filename);
+			      display_name);
 	    break;
 
 	case RM_STATUS_RIPPING:
@@ -197,9 +198,9 @@ print_status (RIP_MANAGER_INFO *rmi)
 		strcpy(status_str, "ripping...    ");
 	    }
 	    format_byte_size(filesize_str, rmi->callback_filesize);
-	    print_to_console ("[%14s] %.50s [%7s]\r",
+	    print_to_console ("[%14s] %s [%7s]\r",
 			      status_str,
-			      rmi->callback_filename,
+			      display_name,
 			      filesize_str);
 	    break;
 	case RM_STATUS_RECONNECTING:
@@ -231,6 +232,7 @@ print_status (RIP_MANAGER_INFO *rmi)
 
 	printed_fullinfo = TRUE;
     }
+    g_free(display_name);
 }
 
 /*
@@ -251,6 +253,7 @@ rip_callback (RIP_MANAGER_INFO* rmi, int message, void *data)
 	print_status (rmi);
 	break;
     case RM_ERROR:
+        m_had_error = TRUE;
 	err = (ERROR_INFO*)data;
 	fprintf(stderr, "\nerror %d [%s]\n", err->error_code, err->error_str);
 	m_alldone = TRUE;
@@ -263,7 +266,6 @@ rip_callback (RIP_MANAGER_INFO* rmi, int message, void *data)
 	print_to_console ("\n");
 	break;
     case RM_STARTED:
-	m_started = TRUE;
 	break;
     }
 }
@@ -340,7 +342,7 @@ parse_arguments (STREAM_PREFS* prefs, int argc, char **argv)
     }
 
     // Get URL
-    strncpy (prefs->url, argv[1], MAX_URL_LEN);
+    g_strlcpy (prefs->url, argv[1], MAX_URL_LEN);
 
     // Load prefs
     prefs_load ();
@@ -368,7 +370,7 @@ parse_arguments (STREAM_PREFS* prefs, int argc, char **argv)
 	    if (i == (argc-1) || argv[i+1][0] == '-')
 		break;
 	    i++;
-	    strncpy (prefs->showfile_pattern, argv[i], SR_MAX_PATH);
+	    g_strlcpy (prefs->showfile_pattern, argv[i], SR_MAX_PATH);
 	    break;
 	case 'A':
 	    OPT_FLAG_SET (prefs->flags, OPT_INDIVIDUAL_TRACKS, 0);
@@ -378,16 +380,16 @@ parse_arguments (STREAM_PREFS* prefs, int argc, char **argv)
 	    break;
 	case 'd':
 	    i++;
-	    strncpy(prefs->output_directory, argv[i], SR_MAX_PATH);
+	    g_strlcpy(prefs->output_directory, argv[i], SR_MAX_PATH);
 	    break;
 	case 'D':
 	    i++;
-	    strncpy(prefs->output_pattern, argv[i], SR_MAX_PATH);
+	    g_strlcpy(prefs->output_pattern, argv[i], SR_MAX_PATH);
 	    break;
 	case 'E':
 	    OPT_FLAG_SET (prefs->flags, OPT_EXTERNAL_CMD, 1);
 	    i++;
-	    strncpy(prefs->ext_cmd, argv[i], SR_MAX_PATH);
+	    g_strlcpy(prefs->ext_cmd, argv[i], SR_MAX_PATH);
 	    break;
 	case 'f':
 	    i++;
@@ -405,7 +407,7 @@ parse_arguments (STREAM_PREFS* prefs, int argc, char **argv)
 	    break;
 	case 'I':
 	    i++;
-	    strncpy(prefs->if_name, argv[i], SR_MAX_PATH);
+	    g_strlcpy(prefs->if_name, argv[i], SR_MAX_PATH);
 	    break;
 	case 'k':
 	    i++;
@@ -418,7 +420,7 @@ parse_arguments (STREAM_PREFS* prefs, int argc, char **argv)
 	    break;
 	case 'L':
 	    i++;
-	    strncpy(prefs->pls_file, argv[i], SR_MAX_PATH);
+	    g_strlcpy(prefs->pls_file, argv[i], SR_MAX_PATH);
 	    break;
 	case 'm':
 	    i++;
@@ -439,7 +441,7 @@ parse_arguments (STREAM_PREFS* prefs, int argc, char **argv)
 	    break;
 	case 'p':
 	    i++;
-	    strncpy(prefs->proxyurl, argv[i], MAX_URL_LEN);
+	    g_strlcpy(prefs->proxyurl, argv[i], MAX_URL_LEN);
 	    break;
 	case 'P':
 	    i++;
@@ -464,7 +466,7 @@ parse_arguments (STREAM_PREFS* prefs, int argc, char **argv)
 	    	prefs->relay_port = atoi(argv[i]);
 	    } else {
 	    	*c = '\0';
-		strncpy(prefs->relay_ip, argv[i], SR_MAX_PATH);
+		g_strlcpy(prefs->relay_ip, argv[i], SR_MAX_PATH);
 		prefs->relay_port = atoi(++c);
  	    }
 	    break;
@@ -483,14 +485,14 @@ parse_arguments (STREAM_PREFS* prefs, int argc, char **argv)
 	    break;
 	case 'u':
 	    i++;
-	    strncpy(prefs->useragent, argv[i], MAX_USERAGENT_STR);
+	    g_strlcpy(prefs->useragent, argv[i], MAX_USERAGENT_STR);
 	    break;
 	case 'v':
 	    printf("Streamripper %s\n", SRVERSION);
 	    exit(0);
 	case 'w':
 	    i++;
-	    strncpy(prefs->rules_file, argv[i], SR_MAX_PATH);
+	    g_strlcpy(prefs->rules_file, argv[i], SR_MAX_PATH);
 	    break;
 	case 'z':
 	    OPT_FLAG_SET(prefs->flags, OPT_SEARCH_PORTS, 0);
@@ -603,28 +605,28 @@ parse_extended_options (STREAM_PREFS* prefs, char* rule)
     /* codeset options */
     x = strlen("codeset-filesys=");
     if (!strncmp(rule,"codeset-filesys=",x)) {
-	strncpy (prefs->cs_opt.codeset_filesys, &rule[x], MAX_CODESET_STRING);
+	g_strlcpy (prefs->cs_opt.codeset_filesys, &rule[x], MAX_CODESET_STRING);
 	debug_printf ("Setting filesys codeset to %s\n",
 		      prefs->cs_opt.codeset_filesys);
 	return;
     }
     x = strlen("codeset-id3=");
     if (!strncmp(rule,"codeset-id3=",x)) {
-	strncpy (prefs->cs_opt.codeset_id3, &rule[x], MAX_CODESET_STRING);
+	g_strlcpy (prefs->cs_opt.codeset_id3, &rule[x], MAX_CODESET_STRING);
 	debug_printf ("Setting id3 codeset to %s\n",
 		      prefs->cs_opt.codeset_id3);
 	return;
     }
     x = strlen("codeset-metadata=");
     if (!strncmp(rule,"codeset-metadata=",x)) {
-	strncpy (prefs->cs_opt.codeset_metadata, &rule[x], MAX_CODESET_STRING);
+	g_strlcpy (prefs->cs_opt.codeset_metadata, &rule[x], MAX_CODESET_STRING);
 	debug_printf ("Setting metadata codeset to %s\n",
 		      prefs->cs_opt.codeset_metadata);
 	return;
     }
     x = strlen("codeset-relay=");
     if (!strncmp(rule,"codeset-relay=",x)) {
-	strncpy (prefs->cs_opt.codeset_relay, &rule[x], MAX_CODESET_STRING);
+	g_strlcpy (prefs->cs_opt.codeset_relay, &rule[x], MAX_CODESET_STRING);
 	debug_printf ("Setting relay codeset to %s\n",
 		      prefs->cs_opt.codeset_relay);
 	return;

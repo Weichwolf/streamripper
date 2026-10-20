@@ -1,12 +1,3 @@
-##-----------------------------------------------------------------------------
-##  Welcome to Streamripper
-##  This CMakeLists.txt file is given to the public domain.
-##  
-##  The rest of streamripper is available under the GNU GENERAL PUBLIC 
-##  LICENSE, v2 or later.  See COPYING for details.
-##-----------------------------------------------------------------------------
-PROJECT (streamripper_lib)
-
 SET (STREAMRIPPER_LIB_SRC
 	callback.c callback.h
 	cbuf3.c cbuf3.h
@@ -18,12 +9,10 @@ SET (STREAMRIPPER_LIB_SRC
 	findsep.c findsep.h
 	findsep2.c
 	http.c http.h
-	iconvert.c
 	mchar.c mchar.h
 	parse.c parse.h
 	prefs.c prefs.h
 	relaylib.c relaylib.h
-	ripaac.c
 	ripogg.c ripogg.h
 	ripstream.c ripstream.h
 	ripstream_mp3.c ripstream_mp3.h
@@ -42,11 +31,13 @@ SET (STREAMRIPPER_LIB_SRC
 	uce_dirent.h
 	)
 
-IF (NOT IBERTY_FOUND)
-  SET (STREAMRIPPER_LIB_SRC
-    ${STREAMRIPPER_LIB_SRC}
-    argv.c)
-ENDIF (NOT IBERTY_FOUND)
-
-ADD_LIBRARY (streamripper1 ${STREAMRIPPER_LIB_SRC})
-INSTALL (TARGETS streamripper1 DESTINATION lib)
+list(APPEND STREAMRIPPER_LIB_SRC argv.c http_stream.c audio_frames.c)
+add_library(streamripper1 STATIC ${STREAMRIPPER_LIB_SRC})
+target_include_directories(streamripper1 PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}" "${PROJECT_BINARY_DIR}")
+target_include_directories(streamripper1 SYSTEM PUBLIC ${MAD_INCLUDE_DIR} ${OGG_INCLUDE_DIR} ${VORBIS_INCLUDE_DIR})
+target_link_libraries(streamripper1 PUBLIC sr_quality PkgConfig::GLIB2 PkgConfig::CURL Threads::Threads
+  ${MAD_LIBRARIES} ${VORBIS_LIBRARIES} ${OGG_LIBRARIES})
+if(UNIX)
+  target_link_libraries(streamripper1 PUBLIC m)
+  target_compile_definitions(streamripper1 PUBLIC __UNIX__=1)
+endif()

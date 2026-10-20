@@ -11,6 +11,8 @@
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA. */
+#include "ripstream_ogg.h"
+#include "callback.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -43,6 +45,7 @@ ripstream_ogg_handle_bos (
     Ogg_page_reference *opr
 )
 {
+    (void)ti;
     Cbuf3 *cbuf3 = &rmi->cbuf3;
     GQueue *write_list = cbuf3->write_list;
     if (!rmi->write_data) {
@@ -97,12 +100,13 @@ ripstream_ogg_write_page (RIP_MANAGER_INFO *rmi, Ogg_page_reference *opr)
     /* Get writer -- there will always be only one writer for ogg */
     if (!write_list->head) {
 	debug_printf ("No write_list->head.  Why?\n");
+        return SR_ERROR_BUFFER_EMPTY;
     }
 
     writer = (Writer*) write_list->head->data;
     debug_printf ("Writer: (%p,%p) %s\n", 
-	writer->m_next_byte.node, 
-	writer->m_last_byte.node,
+	(void *)(writer->m_next_byte.node),
+	(void *)(writer->m_last_byte.node),
 	writer->m_ti.raw_metadata);
 
     /* Open output file if needed */
@@ -136,8 +140,8 @@ ripstream_ogg_write_page (RIP_MANAGER_INFO *rmi, Ogg_page_reference *opr)
 	}
 	write_ptr = ((char*) node->data) + writer->m_next_byte.offset;
 	
-	debug_printf ("computed write at (%p,%d), len = %d, br = %d\n",
-	    writer->m_next_byte.node,
+	debug_printf ("computed write at (%p,%lu), len = %ld, br = %lu\n",
+	    (void *)(writer->m_next_byte.node),
 	    writer->m_next_byte.offset,
 	    write_sz, bytes_remaining);
 
@@ -203,6 +207,7 @@ ripstream_ogg_rip (RIP_MANAGER_INFO* rmi)
     rc = ripstream_get_data (rmi, node->data, rmi->current_track.raw_metadata);
     if (rc != SR_SUCCESS) {
 	debug_printf ("get_stream_data bad return code: %d\n", rc);
+        cbuf3_insert_free_node(cbuf3, node);
 	return rc;
     }
 
@@ -215,8 +220,9 @@ ripstream_ogg_rip (RIP_MANAGER_INFO* rmi)
 
     /* Fill in this_page_list with ogg page references */
     track_info_clear (&rmi->current_track);
-    ripogg_process_chunk (rmi, node->data, cbuf3->chunk_size, 
-	&rmi->current_track);
+    rc = ripogg_process_chunk(rmi, node->data, cbuf3->chunk_size, &rmi->current_track);
+    if (rc != SR_SUCCESS)
+        return rc;
 
     debug_printf ("ogg_track_state[a] = %d\n", rmi->ogg_track_state);
 
@@ -236,7 +242,7 @@ ripstream_ogg_rip (RIP_MANAGER_INFO* rmi)
 	opr = (Ogg_page_reference *) opr_node->data;
 
 	/* If new track, then (maybe) open a new file */
-	debug_printf ("Testing unwritten page [%p, %p]\n", opr_node, opr);
+	debug_printf ("Testing unwritten page [%p, %p]\n", (void *)(opr_node), (void *)(opr));
 	if (opr->m_page_flags & OGG_PAGE_BOS) {
 	    /* If the BOS page is the last page, it means 
 	       we haven't yet parsed the PAGE2. */

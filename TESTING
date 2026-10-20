@@ -1,0 +1,94 @@
+Streamripper 1.65.0-rc.1 validation
+=================================
+
+Date: 2026-10-20
+Local platform: Debian 13, Linux x86_64
+Toolchain: Clang 19.1.7, CMake 3.31.6, Ninja 1.12.1
+Libraries: GLib 2.84.4, curl 8.14.1, libmad 0.15.1b,
+           libogg 1.3.5, libvorbis 1.3.7
+Independent decoder used during validation: FFmpeg/ffprobe 7.1.5.
+
+Reproducible offline checks
+---------------------------
+
+  make test
+  make release
+  make lint
+  cmake --preset thread
+  cmake --build --preset thread
+  ctest --preset thread
+
+All builds treat compiler and linker warnings as errors. The strict profile
+uses AddressSanitizer and UndefinedBehaviorSanitizer without suppression files;
+the thread profile uses ThreadSanitizer. Static analysis covers every compiled
+translation unit with Clang's core, dead-code and POSIX analyzer groups.
+ShellCheck covers the station helper and fixture regeneration script.
+
+CTest's core suite checks:
+  - PLS/M3U and embedded station URL resolution, including relative URLs.
+  - UTF-8, Windows-1252 fallback, malformed UTF-8, byte-limited copies,
+    UTF-16 BOMs and complete surrogate pairs.
+  - Both MP3 splitters against a synthetic stereo signal whose channels have
+    opposite phase, with a known two-second silent gap; uninterrupted mono
+    audio must fall back near the search-window center.
+  - Padding bounds, corrupt MP3 data, ADTS boundaries, circular-buffer
+    offsets, bounded relay headers and case-insensitive AAC/ICY headers.
+
+CTest's integration suite starts local HTTP and certificate-backed HTTPS
+servers. It checks actual libcurl reads, fragmented/chunked data with trailers,
+compression, relative redirects, PLS/M3U, TLS trust and rejection, redirect and
+playlist cycles, missing resources, stalls, unsupported HLS/JSON, and excessive
+ICY metadata intervals. It also checks shutdown before the first audio bytes.
+
+The complete CLI records synthetic MP3 with both splitters (including overlap
+padding), ADTS AAC, and Ogg/Vorbis. Completed MP3/AAC tracks are walked frame by
+frame to prove that their boundaries contain no lost or partial frames. UTF-8
+filenames, UTF-16 ID3v2.3 values, Latin-1 ID3v1 tags and unusually long metadata
+are inspected. Long titles exercise dynamically sized ID3 headers and filename
+version collisions. ICY blocks deliberately contain no NUL terminator and use
+length bytes above 127. Unsupported Ogg/Opus is rejected with a nonzero status.
+All audio fixtures are generated from mathematical tones, not recordings.
+
+Live integration observations
+-----------------------------
+
+The following independent public sources delivered audio during development
+validation. These network checks are separate from deterministic offline CI.
+Short checks used 45-60 second recording limits. Progulus additionally ran
+for six minutes under sanitizers and through a real title change in a release
+build. The latter recording stopped successfully after 180.7 seconds, produced
+a continuous show and a completed track, and was checked with ffprobe/FFmpeg.
+
+  Progulus, 192 kbit/s MP3, ICY interval 8192:
+    http://centova.radioservers.biz:8063/listen.pls?sid=1
+  The Armory, 192 kbit/s MP3, ICY interval 16000:
+    https://zeno.fm/radio/the-armory/
+  The Courtyard, 192 kbit/s MP3, ICY interval 16000:
+    https://zeno.fm/radio/the-courtyard/
+  Radio Swiss Pop, 128 kbit/s MP3, ICY interval 16384:
+    https://www.radioswisspop.ch/en
+  SomaFM Groove Salad, MP3 through a chunked PLS response:
+    https://somafm.com/groovesalad.pls
+  Radio Paradise, MP3:
+    https://stream.radioparadise.com/mp3-192
+  Radio Paradise, ADTS AAC:
+    https://stream.radioparadise.com/aac-128
+  FIP, 128 kbit/s MP3 at 48 kHz, without ICY title blocks:
+    https://icecast.radiofrance.fr/fip-midfi.mp3
+
+Practical limits
+----------------
+
+This is a release candidate. Live availability, geo restrictions and station
+page schemas may change. Split-point detection remains heuristic, especially
+for crossfades, continuous progressive music and delayed title announcements.
+The first captured MP3 frame may depend on an earlier bit reservoir; dropping
+the first partial track is the default. Stopping can omit final buffered audio.
+Use continuous show recording when retaining the whole programme is essential.
+No multi-day endurance or universal codec compatibility is claimed.
+
+HLS/DASH, DRM, Opus, arbitrary HTML players and the historical Windows/Winamp
+projects are outside the validated release scope. Unsupported detected formats
+produce an error. AAC splitting aligns ADTS frames and does not analyze silence.
+The release tarball requires compatible system GLib, curl, Ogg/Vorbis and libc;
+libmad is linked statically. See README for build and recording commands.

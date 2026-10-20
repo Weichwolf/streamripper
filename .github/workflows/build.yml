@@ -1,0 +1,39 @@
+name: Build and test
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: [strict, release]
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-19 libclang-rt-19-dev cmake ninja-build pkg-config libglib2.0-dev libcurl4-openssl-dev libmad0-dev libogg-dev libvorbis-dev python3 openssl clang-tidy-19 shellcheck
+      - run: cmake --preset ${{ matrix.preset }}
+      - run: cmake --build --preset ${{ matrix.preset }}
+      - run: ctest --preset ${{ matrix.preset }}
+      - name: Static analysis and shell lint
+        if: matrix.preset == 'strict'
+        run: |
+          cmake --build build/strict --target lint
+          shellcheck tools/record-radio tests/fixtures/generate.sh
+      - name: Check installation and package
+        if: matrix.preset == 'release'
+        run: |
+          cmake --install build/release --prefix "$RUNNER_TEMP/streamripper"
+          "$RUNNER_TEMP/streamripper/bin/streamripper" --version
+          cpack --config build/release/CPackConfig.cmake -B build/packages
+      - uses: actions/upload-artifact@v7.0.2
+        if: matrix.preset == 'release'
+        with:
+          name: linux-x86_64
+          path: build/packages/*.tar.gz

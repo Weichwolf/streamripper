@@ -100,9 +100,12 @@ argument vector.
 
 */
 
+char **dupargv(char **argv);
+void freeargv(char **vector);
+char **buildargv(const char *input);
+
 char **
-dupargv (argv)
-     char **argv;
+dupargv (char **argv)
 {
   int argc;
   char **copy;
@@ -120,7 +123,7 @@ dupargv (argv)
   for (argc = 0; argv[argc] != NULL; argc++)
     {
       int len = strlen (argv[argc]);
-      copy[argc] = malloc (sizeof (char *) * (len + 1));
+      copy[argc] = malloc ((size_t)len + 1);
       if (copy[argc] == NULL)
 	{
 	  freeargv (copy);
@@ -145,8 +148,7 @@ itself.
 
 */
 
-void freeargv (vector)
-char **vector;
+void freeargv (char **vector)
 {
   register char **scan;
 
@@ -200,8 +202,7 @@ returned, as appropriate.
 
 */
 
-char **buildargv (input)
-     const char *input;
+char **buildargv (const char *input)
 {
   char *arg;
   char *copybuf;

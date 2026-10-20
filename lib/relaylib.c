@@ -78,10 +78,11 @@ static error_code relaylib_start_threads (RIP_MANAGER_INFO* rmi);
 #define ICY_METADATA_TAG "Icy-MetaData:"
 
 
-void
+static void
 relaylib_free_relay_client (Relay_client *relay_client,
 			    void * not_used)
 {
+    (void)not_used;
     closesocket (relay_client->m_sock);
     if (relay_client->m_buffer) {
 	free (relay_client->m_buffer);
@@ -89,7 +90,7 @@ relaylib_free_relay_client (Relay_client *relay_client,
     free (relay_client);
 }
 
-void
+static void
 relaylib_free_relay_client_list (RIP_MANAGER_INFO* rmi)
 {
     threadlib_waitfor_sem (&rmi->relay_list_sem);
@@ -218,7 +219,7 @@ swallow_receive (int sock)
 
 
 // Makes a socket non-blocking
-void
+static void
 make_nonblocking (int sock)
 {
 #if defined (WIN32)
@@ -246,9 +247,10 @@ relaylib_set_response_header(char *http_header)
 #endif
 
 #ifndef WIN32
-void
+static void
 catch_pipe(int code)
 {
+    (void)code;
     //m_sock = 0;
     //m_connected = FALSE;
     // JCBUG, not sure what to do about this
@@ -263,6 +265,8 @@ relaylib_start (RIP_MANAGER_INFO* rmi,
 		char *relay_ip, 
 		int have_metadata)
 {
+    (void)max_connections;
+    (void)have_metadata;
     int ret;
 #ifdef WIN32
     WSADATA wsd;
@@ -638,17 +642,17 @@ relaylib_accept_thread_main (void *arg)
 static error_code
 relaylib_fill_client_buffer_ogg (Cbuf3 *cbuf3, Relay_client *relay)    
 {
-    debug_printf ("relaylib_fill_client_buffer_ogg: %d\n", 
+    debug_printf ("relaylib_fill_client_buffer_ogg: %s\n",
 		  relay->m_header_buf_ptr);
     if (relay->m_header_buf_ptr) {
 	u_long remaining = relay->m_header_buf_len - relay->m_header_buf_off;
-	debug_printf ("relaylib_fill_client_buffer_ogg: %d %d %d\n",
+	debug_printf ("relaylib_fill_client_buffer_ogg: %lu %lu %lu\n",
 		      relay->m_header_buf_len, relay->m_header_buf_off,
 		      remaining);
 	if (remaining > relay->m_buffer_size) {
-	    debug_printf ("memcpy: %p, %p[%d], %d\n",
-			  relay->m_buffer, 
-			  relay->m_header_buf_ptr,
+	    debug_printf ("memcpy: %p, %p[%lu], %lu\n",
+			  (void *)(relay->m_buffer),
+			  (void *)(relay->m_header_buf_ptr),
 			  relay->m_header_buf_off,
 			  relay->m_buffer_size);
 	    memcpy (relay->m_buffer, 
@@ -751,7 +755,7 @@ relaylib_send (RIP_MANAGER_INFO* rmi, Relay_client *relay_client)
 	    }
 	}
 	/* Send from the private buffer to the client */
-	debug_printf ("Relay: Sending %d bytes to client %d\n", 
+	debug_printf ("Relay: Sending %lu bytes to client %d\n",
 		      relay_client->m_left_to_send,
 		      relay_client->m_sock);
 	ret = send (relay_client->m_sock, 

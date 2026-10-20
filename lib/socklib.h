@@ -8,10 +8,10 @@
 #define INADDR_NONE (-1)
 #endif
 
-error_code socklib_init ();
+error_code socklib_init(void);
 error_code socklib_open (HSOCKET *socket_handle, char *host, int port, char *if_name, int timeout);
 void socklib_close (HSOCKET *socket_handle);
-void socklib_cleanup ();
+void socklib_cleanup(void);
 error_code
 socklib_read_header(RIP_MANAGER_INFO* rmi, HSOCKET *socket_handle, 
 		    char *buffer, int size);

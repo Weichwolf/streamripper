@@ -116,7 +116,7 @@ void trim(char *str)
     char *test;
     
     /* skip over initial whitespace */
-    while (*start && isspace(*start)) {
+    while (*start && isspace((unsigned char)*start)) {
         ++start;
     }
     
@@ -130,7 +130,7 @@ void trim(char *str)
     /* backtrack over final whitespace */
     while (end > start) {
         test = end-1;
-        if (isspace(*test)) {
+        if (isspace((unsigned char)*test)) {
             end = test;
         } else {
             break;
@@ -170,225 +170,88 @@ sr_strncpy (char* dst, char* src, int n)
 /*****************************************************************************
  * Lstring functions
  *****************************************************************************/
-void
-lstring_initialize (Lstring* lstring)
-{
-    lstring->num_bytes = 0;
-    lstring->data = 0;
-}
+
 
 
 /*****************************************************************************
  * These functions ARE mchar related
  *****************************************************************************/
-void
-gmem_concat
-(
- gchar** base_mem,          /* In/Out: The memory to be concatenated to */
- gsize base_bytes,          /* Input: Size of base memory (in bytes) */
- char* concat_mem,	    /* Input: The memory to concatenate */
- gsize concat_bytes	    /* Input: Size of concat_mem (in bytes) */
- )
+/* Decode legacy encodings first, then encode from valid UTF-8. GLib owns
+ * conversion state and appends the required binary terminators. */
+static void
+convert_string_with_replacement(gchar **output_string, gsize *output_bytes,
+    char *input_string, gsize input_bytes, char *from_codeset,
+    char *to_codeset, char *repl)
 {
-    *base_mem = g_realloc (*base_mem, base_bytes + concat_bytes);
-    memcpy (*base_mem + base_bytes, concat_mem, concat_bytes);
+    GString *utf8 = g_string_new(NULL);
+    GError *error = NULL;
+    *output_string = NULL;
+    *output_bytes = 0;
+    if (!g_ascii_strcasecmp(from_codeset, "UTF-8")) {
+        char *valid = g_utf8_make_valid(input_string, (gssize)input_bytes);
+        g_string_append(utf8, valid);
+        g_free(valid);
+    } else {
+        gsize offset = 0;
+        while (offset < input_bytes) {
+            gsize read = 0, written = 0;
+            char *part = g_convert(input_string + offset,
+                (gssize)(input_bytes - offset), "UTF-8", from_codeset,
+                &read, &written, &error);
+            if (part) {
+                g_string_append_len(utf8, part, (gssize)written);
+                g_free(part);
+            } else if (read) {
+                /* g_convert does not return partial output on an illegal byte. */
+                char *prefix = g_convert(input_string + offset, (gssize)read,
+                    "UTF-8", from_codeset, NULL, &written, NULL);
+                if (prefix) {
+                    g_string_append_len(utf8, prefix, (gssize)written);
+                    g_free(prefix);
+                }
+            }
+            offset += read;
+            if (error && error->code == G_CONVERT_ERROR_NO_CONVERSION) {
+                g_clear_error(&error);
+                g_string_free(utf8, TRUE);
+                return;
+            }
+            g_clear_error(&error);
+            if (offset < input_bytes) {
+                g_string_append(utf8, "\357\277\275");
+                ++offset;
+            }
+        }
+    }
+    *output_string = g_convert_with_fallback(utf8->str, (gssize)utf8->len,
+        to_codeset, "UTF-8", repl, NULL, output_bytes, &error);
+    g_clear_error(&error);
+    g_string_free(utf8, TRUE);
 }
 
-/* Convert a string, replacing unconvertable characters.
-   Returns a gchar* string, which must be freed by caller using g_free. */
-void
-convert_string_with_replacement
-(
- gchar** output_string,     /* Output: The converted string */
- gsize* output_bytes,       /* Output: Size of output string (in bytes) */
- char* input_string,	    /* Input: String to convert */
- gsize input_bytes,	    /* Input: Length of input string (in bytes) */
- char* from_codeset,	    /* Input: Codeset of input string */
- char* to_codeset,	    /* Input: Codeset of output string */
- char* repl		    /* Input: Replacement character (zero terminated,
-			       in utf-8) */
- )
+char *
+sr_filesystem_path(RIP_MANAGER_INFO *rmi, char *filename)
 {
-    GIConv giconv;
-    gsize cur = 0;              /* Current byte to convert */
-    GError *error = 0;
-    gsize bytes_to_convert = input_bytes;
-    int need_repl = 1;
-    gsize br, bw;
-    gchar* repl_string;
-    gsize repl_bytes;
-
-    *output_string = 0;
-    *output_bytes = 0;
-
-    giconv = g_iconv_open (to_codeset, from_codeset);
-    if (giconv == (GIConv) -1) {
-	/* Not sure why this would happen */
-	debug_printf ("g_iconv_open returned zero\n");
-	return;
-    }
-
-    /* Convert replacement character from UTF-8 to to_codeset */
-    repl_string = g_convert (repl, strlen (repl), 
-			     to_codeset, "UTF-8", 
-			     &br, &bw, &error);
-    if (repl_string && br == strlen (repl)) {
-	repl_bytes = bw;
-    } else {
-	repl_bytes = 0;
-	if (repl_string) {
-	    g_free (repl_string);
-	}
-    }
-
-    while (cur < input_bytes) {
-	gchar* os;
-	int drop_byte = 0;    /* Should we drop a byte? */
-
-	br = 0;
-	os = g_convert_with_iconv (&input_string[cur], bytes_to_convert, 
-				   giconv, &br, &bw, &error);
-	debug_printf ("cur=%d, btc=%d, br=%d, bw=%d (b1=0x%02x)\n", 
-		      cur, bytes_to_convert, br, bw, input_string[cur]);
-
-	/* If the conversion was unsuccessful, usually it means that 
-	   either the input byte doesn't belong to the from_codeset, 
-	   or the code point doesn't belong to the to_codeset.
-	*/
-	if (error) {
-	    /* There could be a partial output -- the specs aren't clear 
-	       about this.  Better free it just in case. */
-	    if (os) {
-		g_free (os);
-	    }
-	    switch (error->code) {
-	    case G_CONVERT_ERROR_ILLEGAL_SEQUENCE:
-	    case G_CONVERT_ERROR_FAILED:
-	    case G_CONVERT_ERROR_PARTIAL_INPUT:
-		debug_printf ("g_convert_with_iconv returned error: %d (%s)\n",
-			      error->code, error->message);
-		break;
-	    case G_CONVERT_ERROR_NO_CONVERSION:
-	    default:
-		/* This shouldn't happen, as GNU inconv guarantees 
-		   conversion to/from UTF-8. */
-		debug_printf ("g_convert_with_iconv returned error: %d (%s)\n",
-			      error->code, error->message);
-		g_error_free (error);
-		g_free (repl_string);
-		return;
-	    }
-	    /* How many bytes to try next time? */
-	    switch (bytes_to_convert) {
-	    case 4:
-	    case 3:
-	    case 2:
-		bytes_to_convert --;
-		break;
-	    case 1:
-		/* Crapped out.  Drop current byte, and add "?" to string. */
-		drop_byte = 1;
-		break;
-	    default:
-		/* Best guess based on br value returned from iconv */
-		if (br < bytes_to_convert && br > 0) {
-		    bytes_to_convert = br;
-		} else {
-		    bytes_to_convert = 4;
-		}
-	    }
-	    g_error_free (error);
-	    error = 0;
-	} else {
-	    if (br == 0) {
-		/* glib 2.16.5 (and probably other versions) doesn't properly 
-		   return G_CONVERT_ERROR_PARTIAL_INPUT with partially 
-		   translated characters.  We'll detect this condition 
-		   when there is no error, but br is 0.	*/
-		drop_byte = 1;
-	    } else {
-		/* A successful conversion. */
-		debug_printf ("Successful conversion: %d bytes read\n", br);
-		gmem_concat (output_string, *output_bytes, os, bw);
-		g_free (os);
-		cur += br;
-		bytes_to_convert = input_bytes - cur;
-		*output_bytes += bw;
-		need_repl = 1;
-	    }
-	}
-
-	/* drop_byte will be true if a conversion failure happened.  
-	   Drop current byte from input, and append replacement 
-	   character into output.  But only append a single replacement 
-	   character for each group of dropped bytes. */
-	if (drop_byte) {
-	    cur ++;
-	    bytes_to_convert = input_bytes - cur;
-	    if (need_repl) {
-		gmem_concat (output_string, *output_bytes, repl, repl_bytes);
-		*output_bytes += repl_bytes;
-		need_repl = 0;
-	    }
-	}
-    }
-    g_free (repl_string);
-    g_iconv_close (giconv);
-    debug_printf ("convert_string_with_replacement |%s| -> |%s| (%s -> %s)\n",
-		  input_string, *output_string, from_codeset, to_codeset);
-    return;
+    char *path = NULL;
+    gsize length = 0;
+    convert_string_with_replacement(&path, &length, filename, strlen(filename),
+        "UTF-8", rmi->mchar_cs.codeset_filesys, "?");
+    return path;
 }
 
 /* Assumes src is valid utf8 */
-int
-utf8cpy (gchar* dst, gchar* src, int dst_len)
+static int
+utf8cpy(gchar *dst, const gchar *src, int capacity)
 {
-    gchar *s = src;
-    gchar *d = dst;
-    gunichar c;
-    gint dlen = 0;
-    gint clen;
-
-    while (dst_len > 6) {
-	c = g_utf8_get_char(s);
-	if (!c) break;
-	clen = g_unichar_to_utf8 (c, d);
-	d += clen;
-	dlen += clen;
-	dst_len -= clen;
-	s = g_utf8_next_char (s);
-    }
-    *d = 0;
-    return dlen;
-}
-
-void
-lstring_from_lstring (Lstring* lstring_out,/* Output: Output string */
-		      Lstring* lstring_in, /* Input: Input string */
-		      char* from_codeset,  /* Input: Codeset of input string */
-		      char* to_codeset)	   /* Input: Codeset of output string */
-{
-    convert_string_with_replacement (&lstring_out->data, 
-				     &lstring_out->num_bytes, 
-				     lstring_in->data, 
-				     lstring_out->num_bytes, 
-				     from_codeset,
-				     to_codeset,
-				     "?");
-}
-
-void
-lstring_from_gstring (Lstring* lstring_out,/* Output: Output string */
-		      gchar* gstring_in,   /* Input: Input string */
-		      char* to_codeset)	   /* Input: Codeset of output string */
-{
-    convert_string_with_replacement (&lstring_out->data, 
-				     &lstring_out->num_bytes, 
-				     gstring_in, 
-				     strlen (gstring_in) + 1, 
-				     "UTF-8", 
-				     to_codeset,
-				     "?");
+    if (capacity <= 0)
+        return 0;
+    size_t length = MIN(strlen(src), (size_t)capacity - 1);
+    const char *end;
+    if (!g_utf8_validate(src, (gssize)length, &end))
+        length = (size_t)(end - src);
+    memmove(dst, src, length);
+    dst[length] = '\0';
+    return (int)length;
 }
 
 /* Input value mlen is measured in mchar, not bytes.
@@ -406,7 +269,7 @@ gstring_from_string (RIP_MANAGER_INFO* rmi, mchar* m, int mlen,
 		     char* c, int codeset_type)
 {
     CODESET_OPTIONS* mchar_cs = &rmi->mchar_cs;
-    if (mlen < 0) return 0;
+    if (mlen <= 0) return 0;
     *m = 0;
     if (!c) return 0;
 
@@ -431,6 +294,8 @@ gstring_from_string (RIP_MANAGER_INFO* rmi, mchar* m, int mlen,
 	    break;
 	case CODESET_METADATA:
 	    src_codeset = mchar_cs->codeset_metadata;
+            if (!g_ascii_strcasecmp(src_codeset, "auto") || !*src_codeset)
+                src_codeset = g_utf8_validate(c, -1, NULL) ? "UTF-8" : "WINDOWS-1252";
 	    break;
 	case CODESET_RELAY:
 	    src_codeset = mchar_cs->codeset_relay;
@@ -442,7 +307,7 @@ gstring_from_string (RIP_MANAGER_INFO* rmi, mchar* m, int mlen,
 	/* GCS FIX: This is not correct, as strlen(c) won't work 
 	   for UTF-16. */
 	convert_string_with_replacement (&gstring, &gstring_len,
-					 c, strlen(c) + 1, 
+					 c, strlen(c),
 					 src_codeset, "UTF-8", 
 					 "?");
 	if (!gstring) {
@@ -492,9 +357,11 @@ string_from_gstring (RIP_MANAGER_INFO* rmi, char* c, int clen, mchar* m, int cod
 	    printf ("Program error.  Bad codeset m->c (%d)\n", codeset_type);
 	    exit (-1);
 	}
+    if (!g_ascii_strcasecmp(tgt_codeset, "auto") || !*tgt_codeset)
+            tgt_codeset = "UTF-8";
 	/* This is the new method */
 	convert_string_with_replacement (&cstring, &cstring_len,
-					 m, strlen(m) + 1, 
+					 m, strlen(m),
 					 "UTF-8", 
 					 tgt_codeset, 
 					 "?");
@@ -502,20 +369,42 @@ string_from_gstring (RIP_MANAGER_INFO* rmi, char* c, int clen, mchar* m, int cod
 	    debug_printf ("Error converting string_from_gstring\n");
 	    return 0;
 	}
-	/* GCS FIX: truncation can chop multibyte string */
-	/* This will be fixed by using dynamic memory here... */
-	if (cstring_len >= clen) {
-	    cstring_len = clen - 1;
-	}
-	memcpy (c, cstring, cstring_len);
-	/* GCS FIX: If converting to UTF-16, need to add 00 to end */
-	c[cstring_len] = 0;
-	g_free (cstring);
-	return cstring_len;
+        int terminator = g_str_has_prefix(tgt_codeset, "UTF-16") ? 2 : 1;
+        if (clen < terminator) {
+            g_free(cstring);
+            return 0;
+        }
+        /* Re-encode a shorter source prefix instead of splitting an encoded
+         * code point or a UTF-16 surrogate pair. Truncation is uncommon. */
+        char *prefix = NULL;
+        if (cstring_len > (gsize)(clen - terminator)) {
+            prefix = g_utf8_make_valid(m, -1);
+            size_t length = strlen(prefix);
+            while (cstring_len > (gsize)(clen - terminator) && length) {
+                length = (size_t)(g_utf8_prev_char(prefix + length) - prefix);
+                prefix[length] = '\0';
+                g_free(cstring);
+                convert_string_with_replacement(&cstring, &cstring_len,
+                    prefix, length, "UTF-8", tgt_codeset, "?");
+                if (!cstring) {
+                    g_free(prefix);
+                    return 0;
+                }
+            }
+        }
+        g_free(prefix);
+        if (cstring_len > (gsize)(clen - terminator)) {
+            g_free(cstring);
+            return 0;
+        }
+        memcpy(c, cstring, cstring_len);
+        memset(c + cstring_len, 0, (size_t)terminator);
+        g_free(cstring);
+        return (int)cstring_len;
     }
 }
 
-const char*
+static const char*
 default_codeset (void)
 {
     const char* fromcode = 0;
@@ -569,23 +458,12 @@ set_codesets_default (CODESET_OPTIONS* cs_opt)
 {
     const char* fromcode = 0;
 
-    /* Set default codesets */
-    fromcode = default_codeset ();
-    if (fromcode) {
-	strncpy (cs_opt->codeset_locale, fromcode, MAX_CODESET_STRING);
-	strncpy (cs_opt->codeset_filesys, fromcode, MAX_CODESET_STRING);
-	strncpy (cs_opt->codeset_metadata, fromcode, MAX_CODESET_STRING);
-	strncpy (cs_opt->codeset_relay, fromcode, MAX_CODESET_STRING);
-    }
-
-    /* Always use UTF-16 for id3 */
-    strncpy (cs_opt->codeset_id3, "UTF-16", MAX_CODESET_STRING);
-
-    /* Don't use UTF-8 for metadata */
-    if (!strcmp (fromcode, "UTF-8")) {
-	strncpy (cs_opt->codeset_metadata, "ISO-8859-1", MAX_CODESET_STRING);
-	strncpy (cs_opt->codeset_relay, "ISO-8859-1", MAX_CODESET_STRING);
-    }
+    fromcode = default_codeset();
+    g_strlcpy(cs_opt->codeset_locale, fromcode, MAX_CODESET_STRING);
+    g_strlcpy(cs_opt->codeset_filesys, "UTF-8", MAX_CODESET_STRING);
+    g_strlcpy(cs_opt->codeset_metadata, "auto", MAX_CODESET_STRING);
+    g_strlcpy(cs_opt->codeset_relay, "UTF-8", MAX_CODESET_STRING);
+    g_strlcpy(cs_opt->codeset_id3, "UTF-16", MAX_CODESET_STRING);
 }
 
 void
@@ -593,14 +471,9 @@ register_codesets (RIP_MANAGER_INFO* rmi, CODESET_OPTIONS* cs_opt)
 {
     CODESET_OPTIONS* mchar_cs = &rmi->mchar_cs;
 
-    /* For ID3, force UCS-2, UCS-2LE, UCS-2BE, UTF-16LE, and UTF-16BE 
-       to be UTF-16.  This way, we get the BOM like we need.
-       This might change if we upgrade to id3v2.4, which allows 
-       UTF-8 and UTF-16 without BOM. */
-    if (!strncmp (cs_opt->codeset_id3, "UCS-2", strlen("UCS-2")) ||
-	!strncmp (cs_opt->codeset_id3, "UTF-16", strlen("UTF-16"))) {
-	strcpy (cs_opt->codeset_id3, "UTF-16");
-    }
+    /* ID3v2.3 has exactly two text encodings: Latin-1 and UTF-16 with BOM. */
+    if (g_ascii_strcasecmp(cs_opt->codeset_id3, "ISO-8859-1"))
+        g_strlcpy(cs_opt->codeset_id3, "UTF-16", MAX_CODESET_STRING);
 
     strcpy (mchar_cs->codeset_locale, cs_opt->codeset_locale);
     strcpy (mchar_cs->codeset_filesys, cs_opt->codeset_filesys);
@@ -628,13 +501,7 @@ is_id3_unicode (RIP_MANAGER_INFO* rmi)
 void
 mstrncpy (mchar* dst, mchar* src, int n)
 {
-    int i = 0;
-    for (i = 0; i < n-1; i++) {
-	if (!(dst[i] = src[i])) {
-	    return;
-	}
-    }
-    dst[i] = 0;
+    utf8cpy(dst, src, n);
 }
 
 mchar* 
@@ -665,25 +532,34 @@ msnprintf (mchar* dest, size_t n, const mchar* fmt, ...)
     va_start (ap, fmt);
     rc = vsnprintf (dest, n, fmt, ap);
     va_end (ap);
+    if (n) {
+        const char *end;
+        if (!g_utf8_validate(dest, -1, &end))
+            dest[end - dest] = '\0';
+    }
     return rc;
 }
 
 mchar*
 mstrchr (const mchar* ws, mchar wc)
 {
-    return g_utf8_strchr (ws, -1, g_utf8_get_char(&wc));
+    return strchr(ws, (unsigned char)wc);
 }
 
 mchar*
 mstrrchr (const mchar* ws, mchar wc)
 {
-    return g_utf8_strrchr (ws, -1, g_utf8_get_char(&wc));
+    return strrchr(ws, (unsigned char)wc);
 }
 
 mchar*
 mstrncat (mchar* ws1, const mchar* ws2, size_t n)
 {
-    return strncat (ws1, ws2, n);
+    size_t current = strlen(ws1);
+    if (n > G_MAXINT - 1)
+        n = G_MAXINT - 1;
+    utf8cpy(ws1 + current, ws2, (int)n + 1);
+    return ws1;
 }
 
 int

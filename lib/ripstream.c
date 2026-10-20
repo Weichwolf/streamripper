@@ -30,6 +30,7 @@
 #include "parse.h"
 #include "rip_manager.h"
 #include "ripstream.h"
+#include "ripogg.h"
 #include "ripstream_mp3.h"
 #include "ripstream_ogg.h"
 #include "debug.h"
@@ -80,8 +81,7 @@ ripstream_init (RIP_MANAGER_INFO* rmi)
     track_info_clear (&rmi->current_track);
     rmi->ripstream_first_time_through = 1;
 
-    if ((rmi->getbuffer = malloc (rmi->getbuffer_size)) == NULL)
-	return SR_ERROR_CANT_ALLOC_MEMORY;
+    rmi->getbuffer = NULL;
 
     rmi->find_silence = -1;
     rmi->no_meta_name[0] = '\0';
@@ -126,6 +126,7 @@ ripstream_destroy (RIP_MANAGER_INFO* rmi)
     rmi->find_silence = -1;
     rmi->cbuf2_size = 0;
 
+    ripogg_destroy(rmi);
     cbuf3_destroy (&rmi->cbuf3);
 
     track_info_clear (&rmi->old_track);
@@ -142,13 +143,13 @@ error_code
 ripstream_get_data (RIP_MANAGER_INFO* rmi, char *data_buf, char *track_buf)
 {
     int ret = 0;
-    char c;
+    unsigned char c;
     char newtrack[MAX_TRACK_LEN];
 
     *track_buf = 0;
     rmi->current_track.have_track_info = 0;
-    debug_printf ("ripstream_recvall (%p, %d)\n", 
-		  data_buf, 
+    debug_printf ("ripstream_recvall (%p, %lu)\n",
+		  (void *)(data_buf),
 		  rmi->getbuffer_size);
     ret = ripstream_recvall (rmi, data_buf, rmi->getbuffer_size);
     debug_printf ("ripstream_recvall (ret = %d)\n", ret);
@@ -159,14 +160,11 @@ ripstream_get_data (RIP_MANAGER_INFO* rmi, char *data_buf, char *track_buf)
 	return SR_SUCCESS;
     }
 
-    if ((ret = ripstream_recvall (rmi, &c, 1)) <= 0)
+    if ((ret = ripstream_recvall (rmi, (char *)&c, 1)) <= 0)
 	return ret;
 
     debug_printf ("METADATA LEN: %d\n",(int)c);
-    if (c < 0) {
-	debug_printf ("Got invalid metadata: %d\n",c);
-	return SR_ERROR_INVALID_METADATA;
-    } else if (c == 0) {
+    if (c == 0) {
 	/* We didn't get any metadata this time. */
 	return SR_SUCCESS;
     } else {
@@ -186,6 +184,7 @@ ripstream_get_data (RIP_MANAGER_INFO* rmi, char *data_buf, char *track_buf)
 error_code
 ripstream_put_data (RIP_MANAGER_INFO *rmi, char *buf, int size)
 {
+    (void)buf;
 #if defined (commentout)
     int ret;
 
@@ -243,6 +242,7 @@ ripstream_queue_writer (
 
     /* Initialize writer */
     memset (writer, 0, sizeof(Writer));
+    writer->m_file = INVALID_FHANDLE;
     writer->m_next_byte = start_byte;
     track_info_copy (&writer->m_ti, ti);
     writer->m_track_no = rmi->track_count;
@@ -256,7 +256,7 @@ ripstream_queue_writer (
     debug_printf ("Queued writer.\n");
     g_queue_push_tail (write_list, writer);
     debug_printf ("write_list = %p, write_list->head = %p\n",
-	write_list, write_list->head);
+	(void *)(write_list), (void *)(write_list->head));
 
     /* Check if we are writing this track */
     if (!GET_INDIVIDUAL_TRACKS (rmi->prefs->flags)) {
@@ -295,10 +295,6 @@ ripstream_start_track (RIP_MANAGER_INFO* rmi, TRACK_INFO* ti)
 error_code
 ripstream_end_track (RIP_MANAGER_INFO* rmi, Writer *writer)
 {
-    Cbuf3 *cbuf3 = &rmi->cbuf3;
-    GQueue *write_list = cbuf3->write_list;
-    mchar mfullpath[SR_MAX_PATH];
-    char fullpath[SR_MAX_PATH];
     error_code rc;
 
     if (rmi->write_data) {
@@ -306,9 +302,9 @@ ripstream_end_track (RIP_MANAGER_INFO* rmi, Writer *writer)
     }
 
     /* Rename the file to complete, or maybe leave in incomplete */
-    debug_printf ("Current track number %d (skipping if less than %d)\n", 
+    debug_printf ("Current track number %d (skipping if less than %lu)\n",
 	writer->m_track_no, rmi->prefs->dropcount);
-    if (writer->m_track_no >= rmi->prefs->dropcount) {
+    if (writer->m_track_no >= 0 && (unsigned long)writer->m_track_no >= rmi->prefs->dropcount) {
 	rc = filelib_rename_to_complete (rmi, writer);
 	if (rc != SR_SUCCESS) {
 	    return rc;
@@ -355,7 +351,7 @@ get_track_from_metadata (RIP_MANAGER_INFO* rmi, int size, char *newtrack)
     /* Default is no track info */
     *newtrack = 0;
 
-    if ((namebuf = malloc(size)) == NULL)
+    if ((namebuf = calloc((size_t)size + 1, 1)) == NULL)
 	return SR_ERROR_CANT_ALLOC_MEMORY;
 
     ret = ripstream_recvall (rmi, namebuf, size);
@@ -412,7 +408,10 @@ get_track_from_metadata (RIP_MANAGER_INFO* rmi, int size, char *newtrack)
 	return SR_SUCCESS;
     }
 
-    g_strlcpy (newtrack, gnamebuf, MAX_TRACK_LEN);
+    if (g_utf8_validate(gnamebuf, -1, NULL))
+        mstrncpy(newtrack, gnamebuf, MAX_TRACK_LEN);
+    else
+        g_strlcpy(newtrack, gnamebuf, MAX_TRACK_LEN);
     g_free (gnamebuf);
 
     return SR_SUCCESS;

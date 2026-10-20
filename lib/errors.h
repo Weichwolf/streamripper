@@ -10,7 +10,7 @@
 // are not organized at all, should have space to insert in places.
 //
 /* ************** IMPORTANT IF YOU ADD ERROR CODES!!!! ***********************/
-#define NUM_ERROR_CODES					((0x44)+1)
+#define NUM_ERROR_CODES					((0x45)+1)
 /* ************** IMPORTANT IF YOU ADD ERROR CODES!!!! ***********************/
 #define SR_SUCCESS				  0x00
 #define SR_SUCCESS_BUFFERING			  0x01
@@ -81,6 +81,7 @@
 #define SR_ERROR_CANT_PARSE_M3U	                - 0x41
 #define SR_ERROR_CANT_CREATE_SOCKET	        - 0x42
 #define SR_ERROR_CREATE_PIPE_FAILED	        - 0x43
+#define SR_ERROR_UNSUPPORTED_FORMAT              - 0x45
 #define SR_ERROR_ABORT_PIPE_SIGNALLED           - 0x44  // Not an error
 
 typedef struct ERROR_INFOst

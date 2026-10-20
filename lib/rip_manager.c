@@ -103,8 +103,13 @@ rip_manager_start (RIP_MANAGER_INFO **rmip,
 	return SR_ERROR_INVALID_PARAM;
     }
 
-    rmi = (*rmip) = (RIP_MANAGER_INFO*) malloc (sizeof(RIP_MANAGER_INFO));
-    memset (rmi, 0, sizeof(RIP_MANAGER_INFO));
+    rmi = (*rmip) = calloc(1, sizeof(*rmi));
+    if (!rmi)
+        return SR_ERROR_CANT_ALLOC_MEMORY;
+    atomic_init(&rmi->started, 0);
+    rmi->stream_sock.closed = TRUE;
+    rmi->filelib_info.m_show_file = INVALID_FHANDLE;
+    rmi->filelib_info.m_cue_file = INVALID_FHANDLE;
     rmi->prefs = prefs;
 
     rmi->started_sem = threadlib_create_sem();
@@ -149,7 +154,7 @@ void
 rip_manager_stop (RIP_MANAGER_INFO *rmi)
 {
     // Make sure this function isn't getting called twice
-    if (!rmi->started) {
+    if (!rmi) {
 	debug_printf ("rip_manager_stop() called while not started\n");
 	return;
     }
@@ -157,7 +162,8 @@ rip_manager_stop (RIP_MANAGER_INFO *rmi)
     /* Write to pipe so ripping thread will exit select() */
 #if __UNIX__
     debug_printf ("Writing to abort_pipe.\n");
-    write (rmi->abort_pipe[1], "0", 1);
+    if (write(rmi->abort_pipe[1], "0", 1) < 0 && errno != EAGAIN)
+        debug_printf("Could not signal abort pipe: %s\n", strerror(errno));
 #endif
 
     // Make sure the ripping started before we try to stop
@@ -167,7 +173,7 @@ rip_manager_stop (RIP_MANAGER_INFO *rmi)
 
     // Causes the code running in the thread to bail
     debug_printf ("Closing stream_sock...\n");
-    socklib_close(&rmi->stream_sock);
+    /* The ripping thread releases its stream before returning. */
 
     // Kill external process
     if (rmi->ep) {
@@ -182,6 +188,7 @@ rip_manager_stop (RIP_MANAGER_INFO *rmi)
     destroy_subsystems (rmi);
     debug_printf ("Destroying m_started_sem\n");
     threadlib_destroy_sem(&rmi->started_sem);
+    parser_free(rmi);
     debug_printf ("Done with rip_manager_stop\n");
 
     /* Close pipes */
@@ -190,6 +197,7 @@ rip_manager_stop (RIP_MANAGER_INFO *rmi)
     close (rmi->abort_pipe[0]);
     close (rmi->abort_pipe[1]);
 #endif
+    free(rmi);
 }
 
 void
@@ -212,7 +220,7 @@ debug_ripthread (RIP_MANAGER_INFO* rmi)
     debug_printf ("meta_interval = %d\n", rmi->meta_interval);
     debug_printf ("status = %d\n", rmi->status);
     debug_printf ("track_count = %d\n", rmi->track_count);
-    debug_printf ("external_process = %p\n", rmi->ep);
+    debug_printf ("external_process = %p\n", (void *)(rmi->ep));
 }
 
 /** Main function launched by ripping thread.
@@ -234,7 +242,8 @@ ripthread (void *thread_arg)
     if (ret != SR_SUCCESS) {
 	debug_printf ("Ripthread did start_ripping()\n");
 	threadlib_signal_sem (&rmi->started_sem);
-	callback_post_error (rmi, ret);
+        if (ret != SR_ERROR_ABORT_PIPE_SIGNALLED)
+            callback_post_error(rmi, ret);
 	goto DONE;
     }
 
@@ -312,6 +321,7 @@ ripthread (void *thread_arg)
     // or we we're not auto-reconnecting and the stream just stopped
     // or when we have been told to stop, via the rmi->started flag
  DONE:
+    socklib_close(&rmi->stream_sock);
     rmi->status_callback (rmi, RM_DONE, 0);
     rmi->started = 0;
     debug_printf ("ripthread() exiting!\n");
@@ -320,8 +330,8 @@ ripthread (void *thread_arg)
 void
 destroy_subsystems (RIP_MANAGER_INFO* rmi)
 {
-    ripstream_destroy (rmi);
     relaylib_stop (rmi);
+    ripstream_destroy (rmi);
     /* GCS Feb 17,2008.  The socklib_cleanup() is done at program 
        shutdown, not rip_manager shutdown. */
     // socklib_cleanup();
@@ -419,6 +429,8 @@ start_ripping (RIP_MANAGER_INFO* rmi)
 	debug_printf ("filelib_init() returned error\n");
 	goto RETURN_ERR;
     }
+
+    g_strlcpy(rmi->streamname, rmi->filelib_info.m_icy_name, sizeof(rmi->streamname));
 
     /* Start up external program to get metadata. */
     rmi->ep = 0;

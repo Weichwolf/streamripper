@@ -80,13 +80,13 @@ static int get_next_sequence_number (RIP_MANAGER_INFO* rmi, gchar* fn_base);
 static void fill_date_buf (RIP_MANAGER_INFO* rmi, gchar* datebuf, 
 			   int datebuf_len);
 static error_code filelib_open_showfiles (RIP_MANAGER_INFO* rmi);
-static void move_file (RIP_MANAGER_INFO* rmi, gchar* new_filename, gchar* old_filename);
+static error_code move_file (RIP_MANAGER_INFO* rmi, gchar* new_filename, gchar* old_filename);
 static gchar* replace_invalid_chars (gchar *str);
 static void remove_trailing_periods (gchar *str);
 static BOOL new_file_is_better (RIP_MANAGER_INFO* rmi, gchar *oldfile, gchar *newfile);
 static void delete_file (RIP_MANAGER_INFO* rmi, gchar* filename);
 static void truncate_file (RIP_MANAGER_INFO* rmi, gchar* filename);
-static void
+static error_code
 filelib_rename_versioned (gchar** new_fn, RIP_MANAGER_INFO* rmi, 
 			  gchar* directory, gchar* fnbase, gchar* extension);
 
@@ -143,7 +143,7 @@ filelib_init (RIP_MANAGER_INFO* rmi,
     debug_printf ("converting icy_name\n");
     gstring_from_string (rmi, fli->m_icy_name, SR_MAX_PATH, icy_name, 
 			 CODESET_METADATA);
-    debug_printf ("Converted output directory: len=%d\n", 
+    debug_printf ("Converted output directory: len=%zu\n",
 		  mstrlen (tmp_output_directory));
     mstrcpy (fli->m_stripped_icy_name, fli->m_icy_name);
     
@@ -248,6 +248,7 @@ filelib_init (RIP_MANAGER_INFO* rmi,
 error_code
 filelib_start (RIP_MANAGER_INFO* rmi, Writer *writer, TRACK_INFO* ti)
 {
+    error_code rc;
     FILELIB_INFO* fli = &rmi->filelib_info;
     gchar newfile[TEMP_STR_LEN];
     gchar fnbase[TEMP_STR_LEN];
@@ -264,44 +265,46 @@ filelib_start (RIP_MANAGER_INFO* rmi, Writer *writer, TRACK_INFO* ti)
     msnprintf (newfile, TEMP_STR_LEN, m_S m_S m_S, 
 	       fli->m_incomplete_directory, fnbase, fli->m_extension);
     if (fli->m_keep_incomplete) {
-	filelib_rename_versioned (0, rmi, fli->m_incomplete_directory, 
+	rc = filelib_rename_versioned (0, rmi, fli->m_incomplete_directory,
 				  fnbase, fli->m_extension);
+        if (rc != SR_SUCCESS)
+            return rc;
     }
     mstrcpy (fli->m_incomplete_filename, newfile);
+    g_strlcpy(writer->incomplete_filename, newfile, sizeof(writer->incomplete_filename));
     return filelib_open_for_write (rmi, &writer->m_file, newfile);
 }
 
 error_code
-filelib_write_cue (RIP_MANAGER_INFO* rmi, TRACK_INFO* ti, int secs)
+filelib_write_cue(RIP_MANAGER_INFO *rmi, TRACK_INFO *ti, int secs)
 {
-    FILELIB_INFO* fli = &rmi->filelib_info;
-    int rc;
-    char buf1[MAX_TRACK_LEN];
-    char buf2[MAX_TRACK_LEN];
-
-    if (!fli->m_do_show) return SR_SUCCESS;
-    if (!fli->m_cue_file) return SR_SUCCESS;
-
-    rc = snprintf (buf2, MAX_TRACK_LEN, "  TRACK %02d AUDIO\n", 
-		   fli->m_track_no++);
-    filelib_write (fli->m_cue_file, buf2, rc);
-    string_from_gstring (rmi, buf1, MAX_TRACK_LEN, ti->title, CODESET_ID3);
-    rc = snprintf (buf2, MAX_TRACK_LEN, "    TITLE \"%s\"\n", buf1);
-    filelib_write (fli->m_cue_file, buf2, rc);
-    string_from_gstring (rmi, buf1, MAX_TRACK_LEN, ti->artist, CODESET_ID3);
-    rc = snprintf (buf2, MAX_TRACK_LEN, "    PERFORMER \"%s\"\n", buf1);
-    filelib_write (fli->m_cue_file, buf2, rc);
-    rc = snprintf (buf2, MAX_TRACK_LEN, "    INDEX 01 %02d:%02d:00\n", 
-		   secs / 60, secs % 60);
-    filelib_write (fli->m_cue_file, buf2, rc);
-
-    return SR_SUCCESS;
+    FILELIB_INFO *fli = &rmi->filelib_info;
+    if (!fli->m_do_show || fli->m_cue_file == INVALID_FHANDLE)
+        return SR_SUCCESS;
+    char *title = g_strdup(ti->title);
+    char *artist = g_strdup(ti->artist);
+    for (char *text = title; *text; ++text) {
+        if (*text == '\n' || *text == '\r') *text = ' ';
+        if (*text == '"') *text = '\'';
+    }
+    for (char *text = artist; *text; ++text) {
+        if (*text == '\n' || *text == '\r') *text = ' ';
+        if (*text == '"') *text = '\'';
+    }
+    char *cue = g_strdup_printf("  TRACK %02d AUDIO\n    TITLE \"%s\"\n"
+        "    PERFORMER \"%s\"\n    INDEX 01 %02d:%02d:00\n",
+        fli->m_track_no++, title, artist, secs / 60, secs % 60);
+    error_code rc = filelib_write(fli->m_cue_file, cue, strlen(cue));
+    g_free(cue);
+    g_free(title);
+    g_free(artist);
+    return rc;
 }
 
 error_code
 filelib_write_track (Writer *writer, char *buf, u_long size)
 {
-    debug_printf ("filelib_write_track %p %u\n", buf, size);
+    debug_printf ("filelib_write_track %p %lu\n", (void *)(buf), size);
     return filelib_write (writer->m_file, buf, size);
 }
 
@@ -333,6 +336,7 @@ filelib_rename_to_complete (
     gchar new_path[TEMP_STR_LEN];
     gchar* new_fnbase;
     gchar* new_dir;
+    error_code rc;
     enum OverwriteOpt overwrite = rmi->prefs->overwrite;
     BOOL truncate_dup = GET_TRUNCATE_DUPS(rmi->prefs->flags);
     /* GCS FIX: It used to be that fullpath was returned to 
@@ -366,30 +370,31 @@ filelib_rename_to_complete (
     case OVERWRITE_LARGER:
 	/* Smart overwriting -- only overwrite if new file is bigger */
 	ok_to_write = new_file_is_better (rmi, new_path, 
-					  fli->m_incomplete_filename);
+					  writer->incomplete_filename);
 	break;
     case OVERWRITE_VERSION:
     default:
 	new_dir = g_path_get_dirname (new_path);
 	new_fnbase = g_path_get_basename (new_path);
 	trim_mp3_suffix (rmi, new_fnbase);
-	filelib_rename_versioned (0, rmi, new_dir, new_fnbase, 
+	rc = filelib_rename_versioned (0, rmi, new_dir, new_fnbase,
 				  fli->m_extension);
 	g_free (new_dir);
 	g_free (new_fnbase);
+        if (rc != SR_SUCCESS)
+            return rc;
 	ok_to_write = TRUE;
     }
 
     debug_printf ("filelib_end: new_path = %s\n", new_path);
 
     if (ok_to_write) {
-	if (file_exists (rmi, new_path)) {
-	    delete_file (rmi, new_path);
-	}
-	move_file (rmi, new_path, fli->m_incomplete_filename);
+        rc = move_file(rmi, new_path, writer->incomplete_filename);
+        if (rc != SR_SUCCESS)
+            return rc;
     } else {
-	if (truncate_dup && file_exists (rmi, fli->m_incomplete_filename)) {
-	    truncate_file (rmi, fli->m_incomplete_filename);
+	if (truncate_dup && file_exists (rmi, writer->incomplete_filename)) {
+	    truncate_file (rmi, writer->incomplete_filename);
 	}
     }
 
@@ -513,6 +518,8 @@ set_output_directory (RIP_MANAGER_INFO* rmi,
 		      int is_for_showfile
 		      )
 {
+    (void)get_separate_dirs;
+    (void)get_date_stamp;
     error_code ret;
     gchar opat_device[3];
     gchar odir_device[3];
@@ -542,7 +549,7 @@ set_output_directory (RIP_MANAGER_INFO* rmi,
     /* Get the device. It can be empty. */
     if (output_directory && *output_directory) {
 	device_split (output_directory, odir_device, odir_path);
-	debug_printf ("devicesplit: %d -> %d %d\n", 
+	debug_printf ("devicesplit: %zu -> %zu %zu\n",
 		      mstrlen (output_directory), 
 		      mstrlen (odir_device),
 		      mstrlen (odir_path));
@@ -583,7 +590,7 @@ set_output_directory (RIP_MANAGER_INFO* rmi,
     /* Fill in %S and %d patterns */
     msnprintf (pattern_head, SR_MAX_PATH, m_S m_S m_S, device, 
 	       cwd_path, odir_path);
-    debug_printf ("Composed pattern head (%d) <- (%d,%d,%d)\n",
+    debug_printf ("Composed pattern head (%zu) <- (%zu,%zu,%zu)\n",
 		  mstrlen(pattern_head), mstrlen(device), 
 		  mstrlen(cwd_path), mstrlen(odir_path));
     parse_and_subst_dir (rmi, pattern_head, pattern_tail, opat_path, 
@@ -786,8 +793,9 @@ static BOOL
 file_exists (RIP_MANAGER_INFO* rmi, gchar *filename)
 {
     FHANDLE f;
-    char fn[SR_MAX_PATH];
-    string_from_gstring (rmi, fn, SR_MAX_PATH, filename, CODESET_FILESYS);
+    char *fn = sr_filesystem_path(rmi, filename);
+    if (!fn)
+        return FALSE;
 #if defined (WIN32)
     f = CreateFile (fn, GENERIC_READ,
 	    FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING,
@@ -795,6 +803,7 @@ file_exists (RIP_MANAGER_INFO* rmi, gchar *filename)
 #else
     f = open (fn, O_RDONLY);
 #endif
+    g_free(fn);
     if (f == INVALID_FHANDLE) {
 	return FALSE;
     }
@@ -824,7 +833,6 @@ parse_and_subst_pat (RIP_MANAGER_INFO* rmi,
     gchar datebuf[DATEBUF_LEN];
     int opi = 0;
     int nfi = 0;
-    int done;
     gchar* pat = pattern;
 
     /* Reserve 5 bytes: 4 for the .mp3 extension, and 1 for null char */
@@ -833,7 +841,6 @@ parse_and_subst_pat (RIP_MANAGER_INFO* rmi,
     mstrcpy (newfile, directory);
     opi = 0;
     nfi = mstrlen(newfile);
-    done = 0;
 
     /* Strip artist, title, album */
     debug_printf ("parse_and_subst_pat: stripping\n");
@@ -849,7 +856,6 @@ parse_and_subst_pat (RIP_MANAGER_INFO* rmi,
     debug_printf ("parse_and_subst_pat: substitute pattern\n");
     while (nfi < MAX_FILEBASELEN) {
 	if (pat[opi] == 0) {
-	    done = 1;
 	    break;
 	}
 	if (pat[opi] != m_('%')) {
@@ -917,7 +923,6 @@ parse_and_subst_pat (RIP_MANAGER_INFO* rmi,
 	    /* The pattern ends in '%', but that's ok. */
 	    newfile[nfi++] = pat[opi++];
 	    newfile[nfi] = 0;
-	    done = 1;
 	    break;
 	case m_('0'): case m_('1'): case m_('2'): case m_('3'): case m_('4'): 
 	case m_('5'): case m_('6'): case m_('7'): case m_('8'): case m_('9'): 
@@ -1047,18 +1052,24 @@ truncate_file (RIP_MANAGER_INFO* rmi, gchar* filename)
 #endif
 }
 
-static void
-move_file (RIP_MANAGER_INFO* rmi, gchar* new_filename, gchar* old_filename)
+static error_code
+move_file(RIP_MANAGER_INFO *rmi, gchar *new_filename, gchar *old_filename)
 {
-    char old_fn[SR_MAX_PATH];
-    char new_fn[SR_MAX_PATH];
-    string_from_gstring (rmi, old_fn, SR_MAX_PATH, old_filename, CODESET_FILESYS);
-    string_from_gstring (rmi, new_fn, SR_MAX_PATH, new_filename, CODESET_FILESYS);
-#if defined WIN32
-    MoveFile(old_fn, new_fn);
+    char *old_path = sr_filesystem_path(rmi, old_filename);
+    char *new_path = sr_filesystem_path(rmi, new_filename);
+    if (!old_path || !new_path) {
+        g_free(old_path);
+        g_free(new_path);
+        return SR_ERROR_FAILED_TO_MOVE_FILE;
+    }
+#if WIN32
+    int failed = !MoveFileEx(old_path, new_path, MOVEFILE_REPLACE_EXISTING);
 #else
-    rename (old_fn, new_fn);
+    int failed = rename(old_path, new_path);
 #endif
+    g_free(old_path);
+    g_free(new_path);
+    return failed ? SR_ERROR_FAILED_TO_MOVE_FILE : SR_SUCCESS;
 }
 
 static void
@@ -1096,7 +1107,7 @@ filelib_open_for_write (RIP_MANAGER_INFO* rmi, FHANDLE* fp, gchar* filename)
     /* For unix, we need to convert to char, and just open. 
        http://mail.nl.linux.org/linux-utf8/2001-02/msg00103.html
     */
-    *fp = open (fn, O_RDWR | O_CREAT, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+    *fp = open (fn, O_RDWR | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
     if (*fp == INVALID_FHANDLE) {
 	/* GCS FIX -- need error message here! */
 	// printf ("ERROR creating file: %s\n",filename);
@@ -1109,8 +1120,8 @@ filelib_open_for_write (RIP_MANAGER_INFO* rmi, FHANDLE* fp, gchar* filename)
 static error_code
 filelib_write (FHANDLE fp, char *buf, u_long size)
 {
-    if (!fp) {
-	debug_printf("filelib_write: fp = 0\n");
+    if (fp == INVALID_FHANDLE) {
+	debug_printf("filelib_write: invalid handle\n");
 	return SR_ERROR_CANT_WRITE_TO_FILE;
     }
 #if WIN32
@@ -1127,8 +1138,15 @@ filelib_write (FHANDLE fp, char *buf, u_long size)
 	}
     }
 #else
-    if (write (fp, buf, size) == -1)
-	return SR_ERROR_CANT_WRITE_TO_FILE;
+    while (size) {
+        ssize_t written = write(fp, buf, size);
+        if (written < 0 && errno == EINTR)
+            continue;
+        if (written <= 0)
+            return SR_ERROR_CANT_WRITE_TO_FILE;
+        buf += written;
+        size -= (u_long)written;
+    }
 #endif
 
     return SR_SUCCESS;
@@ -1140,7 +1158,7 @@ filelib_write (FHANDLE fp, char *buf, u_long size)
 
    The new name for the file is returned in new_fn (if new_fn is not 0).
 */
-static void
+static error_code
 filelib_rename_versioned (gchar** new_fn, RIP_MANAGER_INFO* rmi, 
 			  gchar* directory, gchar* fnbase, gchar* extension)
 {
@@ -1158,10 +1176,11 @@ filelib_rename_versioned (gchar** new_fn, RIP_MANAGER_INFO* rmi,
 	debug_printf ("filelib_rename_versioned: tgt_path doesn't exist (%s)\n",
 		      tgt_path);
 	g_free (tgt_path);
-	return;
+	return SR_SUCCESS;
     }
 
-    for (n = 1; n <= G_MAXINT; n++) {
+    error_code result = SR_ERROR_FAILED_TO_MOVE_FILE;
+    for (n = 1; n < G_MAXINT; n++) {
 	gchar *ren_file, *ren_path;
 	ren_file = g_strdup_printf ("%s (%d)%s", fnbase, n, extension);
 	ren_path = g_build_filename (directory, ren_file, NULL);
@@ -1173,7 +1192,12 @@ filelib_rename_versioned (gchar** new_fn, RIP_MANAGER_INFO* rmi,
 	/* GCS FIX: This should check for ENAMETOOLONG and other errors */
 	debug_printf ("filelib_rename_versioned: moving file (%s)->(%s)\n",
 		      tgt_path, ren_path);
-	move_file (rmi, ren_path, tgt_path);
+        result = move_file(rmi, ren_path, tgt_path);
+        if (result != SR_SUCCESS) {
+            g_free(ren_file);
+            g_free(ren_path);
+            break;
+        }
 	g_free (ren_file);
 	if (new_fn) {
 	    *new_fn = ren_path;
@@ -1183,6 +1207,7 @@ filelib_rename_versioned (gchar** new_fn, RIP_MANAGER_INFO* rmi,
 	break;
     }
     g_free (tgt_path);
+    return result;
 }
 
 static void
@@ -1200,7 +1225,8 @@ filelib_adjust_cuefile (RIP_MANAGER_INFO* rmi, gchar* new_show_name,
     
     /* Create temporary file */
     fd = g_file_open_tmp ("streamripper-XXXXXX", &tmp_fn, &error);
-    if (!fd || error) {
+    if (fd < 0 || error) {
+        g_clear_error(&error);
         debug_printf ("Error with g_file_open_tmp\n");
         if (tmp_fn) g_free (tmp_fn);
         return;
@@ -1208,6 +1234,7 @@ filelib_adjust_cuefile (RIP_MANAGER_INFO* rmi, gchar* new_show_name,
     close (fd);
     
     /* Open temporary file as FILE* */
+    close(fd);
     fp_out = g_fopen (tmp_fn, "w");
     if (!fp_out) {
         debug_printf ("Error with g_fopen (%s)\n", tmp_fn);
@@ -1228,14 +1255,19 @@ filelib_adjust_cuefile (RIP_MANAGER_INFO* rmi, gchar* new_show_name,
 
     /* Write renamed mp3 showfile to output file */
     show_fnbase = g_path_get_basename (new_show_name);
-    rc = msnprintf (mcue_buf, 1024, m_("FILE \"") m_S m_("\" MP3\n"), 
+    msnprintf (mcue_buf, 1024, m_("FILE \"") m_S m_("\" MP3\n"),
 		    show_fnbase);
     g_free (show_fnbase);
     rc = string_from_gstring (rmi, cue_buf, 1024, mcue_buf, CODESET_FILESYS);
     fwrite (cue_buf, 1, rc, fp_out);
 
     /* Skip line in input file */
-    fgets (cue_buf, 1024, fp_in);
+    if (!fgets(cue_buf, sizeof(cue_buf), fp_in)) {
+        fclose(fp_in);
+        fclose(fp_out);
+        g_free(tmp_fn);
+        return;
+    }
 
     /* Copy remaining bytes from input file to output file */
     while (1) {
@@ -1278,10 +1310,18 @@ filelib_open_showfiles (RIP_MANAGER_INFO* rmi)
     new_dir = g_path_get_dirname (fli->m_show_name);
     new_fnbase = g_path_get_basename (fli->m_show_name);
     trim_mp3_suffix (rmi, new_fnbase);
-    filelib_rename_versioned (&new_show_name, rmi, new_dir, 
-			      new_fnbase, fli->m_extension);
-    filelib_rename_versioned (&new_cue_name, rmi, new_dir, new_fnbase, 
-			      m_(".cue"));
+    rc = filelib_rename_versioned(&new_show_name, rmi, new_dir, new_fnbase, fli->m_extension);
+    if (rc == SR_SUCCESS)
+        rc = filelib_rename_versioned(&new_cue_name, rmi, new_dir, new_fnbase, ".cue");
+    else
+        new_cue_name = NULL;
+    if (rc != SR_SUCCESS) {
+        g_free(new_show_name);
+        g_free(new_cue_name);
+        g_free(new_dir);
+        g_free(new_fnbase);
+        return rc;
+    }
     if (new_show_name && new_cue_name) {
 	/* Rewrite previous cue file to point to renamed mp3 showfile */
 	debug_printf ("Trying to adjust cuefile\n");
@@ -1311,7 +1351,7 @@ filelib_open_showfiles (RIP_MANAGER_INFO* rmi)
 	}
 	debug_mprintf (m_("show_name: ") m_S m_(", basename: ") m_S m_("\n"),
 		       fli->m_show_name, basename);
-	rc = msnprintf (mcue_buf, 1024, m_("FILE \"") m_S m_("\" MP3\n"), 
+	msnprintf (mcue_buf, 1024, m_("FILE \"") m_S m_("\" MP3\n"),
 			basename);
 	rc = string_from_gstring (rmi, cue_buf, 1024, mcue_buf, CODESET_FILESYS);
 	rc = filelib_write (fli->m_cue_file, cue_buf, rc);
@@ -1336,9 +1376,9 @@ trim_filename (RIP_MANAGER_INFO* rmi, gchar* out, gchar *filename)
 {
     FILELIB_INFO* fli = &rmi->filelib_info;
     long maxlen = fli->m_max_filename_length;
-    mstrncpy (out, filename, MAX_TRACK_LEN);
+    mstrncpy (out, filename, SR_MAX_PATH);
     replace_invalid_chars (out);
-    out[maxlen-4] = 0;	// -4 = make room for ".mp3"
+    mstrncpy(out, out, maxlen - 3);	// -4 = make room for ".mp3"
 }
 
 static void
@@ -1358,7 +1398,6 @@ trim_mp3_suffix (RIP_MANAGER_INFO* rmi, gchar *filename)
 static int
 get_next_sequence_number (RIP_MANAGER_INFO* rmi, gchar* fn_base)
 {
-    int rc;
     int di = 0;
     int edi = 0;
     int seq;
@@ -1383,8 +1422,9 @@ get_next_sequence_number (RIP_MANAGER_INFO* rmi, gchar* fn_base)
     fn_prefix[0] = 0;
     mstrcpy (fn_prefix, &fn_base[edi+1]);
 
-    rc = string_from_gstring (rmi, dname, SR_MAX_PATH, dir_name, CODESET_FILESYS);
-    rc = string_from_gstring (rmi, fnp, SR_MAX_PATH, fn_prefix, CODESET_FILESYS);
+    if (!string_from_gstring(rmi, dname, SR_MAX_PATH, dir_name, CODESET_FILESYS) ||
+        !string_from_gstring(rmi, fnp, SR_MAX_PATH, fn_prefix, CODESET_FILESYS))
+        return 0;
 
     /* Look through directory for a filenames that match prefix */
     if ((dp = opendir (dname)) == 0) {

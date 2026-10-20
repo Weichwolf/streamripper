@@ -26,6 +26,7 @@
 #include "srtypes.h"
 #include "cbuf3.h"
 #include "findsep.h"
+#include "audio_frames.h"
 #include "mchar.h"
 #include "parse.h"
 #include "rip_manager.h"
@@ -56,16 +57,12 @@ compute_cbuf2_size (RIP_MANAGER_INFO* rmi,
 static int ms_to_bytes (int ms, int bitrate);
 static int bytes_to_secs (unsigned int bytes, int bitrate);
 static error_code
-write_id3v2_frame (RIP_MANAGER_INFO *rmi, 
-		   Writer *writer, char* tag_name, mchar* data,
-		   int charset, int *sent);
-static error_code
 ripstream_mp3_check_for_track_change (RIP_MANAGER_INFO* rmi);
 static error_code
 ripstream_mp3_end_track (RIP_MANAGER_INFO* rmi, 
 			 Writer* writer);
 static error_code
-ripstream_mp3_check_bitrate (RIP_MANAGER_INFO* rmi);
+ripstream_mp3_check_bitrate (RIP_MANAGER_INFO* rmi, const char *audio);
 static error_code
 ripstream_mp3_write_oldest_node (RIP_MANAGER_INFO* rmi);
 
@@ -115,20 +112,28 @@ ripstream_mp3_rip (RIP_MANAGER_INFO* rmi)
 			 GET_MAKE_RELAY(rmi->prefs->flags),
 			 rmi->getbuffer_size,
 			 min_chunks);
+        if (rc != SR_SUCCESS)
+            return rc;
     }
 
     /* Get new data from the stream */
     node = cbuf3_request_free_node (rmi, cbuf3);
+    if (!node)
+        return SR_ERROR_CANT_ALLOC_MEMORY;
     rc = ripstream_get_data (rmi, node->data, rmi->current_track.raw_metadata);
     if (rc != SR_SUCCESS) {
 	debug_printf ("get_stream_data bad return code: %d\n", rc);
+        cbuf3_insert_free_node(cbuf3, node);
 	return rc;
     }
 
     /* If first time through, check the bitrate in the stream. */
     if (rmi->ripstream_first_time_through) {
-	rc = ripstream_mp3_check_bitrate (rmi);
-	if (rc != SR_SUCCESS) return rc;
+        rc = ripstream_mp3_check_bitrate(rmi, node->data);
+        if (rc != SR_SUCCESS) {
+            cbuf3_insert_free_node(cbuf3, node);
+            return rc;
+        }
     }
 
     /* Get the metadata for the new node */
@@ -181,7 +186,6 @@ ripstream_mp3_rip (RIP_MANAGER_INFO* rmi)
 
     /* First time through, so start a track. */
     if (rmi->ripstream_first_time_through) {
-	int rc;
 	Cbuf3_pointer first_byte;
 	unsigned int secs;
 
@@ -194,7 +198,7 @@ ripstream_mp3_rip (RIP_MANAGER_INFO* rmi)
 	if (!rmi->current_track.have_track_info) {
 	    strcpy (rmi->current_track.raw_metadata, rmi->no_meta_name);
 	}
-	msnprintf (rmi->current_track.track_a, MAX_HEADER_LEN, m_("0"));
+	msnprintf (rmi->current_track.track_a, MAX_TRACK_LEN, m_("0"));
 
 	/* Queue new writer, and notify callback */
 	rc = ripstream_queue_writer (rmi, &rmi->current_track, first_byte);
@@ -216,7 +220,9 @@ ripstream_mp3_rip (RIP_MANAGER_INFO* rmi)
     }
 
     /* Check for track change. */
-    ripstream_mp3_check_for_track_change (rmi);
+    rc = ripstream_mp3_check_for_track_change(rmi);
+    if (rc != SR_SUCCESS)
+        return rc;
 
     /* If buffer is full, write oldest node to disk */
     rc = ripstream_mp3_write_oldest_node (rmi);
@@ -254,64 +260,44 @@ ripstream_mp3_start_track (RIP_MANAGER_INFO* rmi, Writer *writer)
         return rc;
     }
 
-    /* Write ID3V2 */
-    if (GET_ADD_ID3V2(rmi->prefs->flags)) {
-	int i;
-	char bigbuf[HEADER_SIZE] = "";
-	int header_size = HEADER_SIZE;
-	char header1[6] = "ID3\x03\0\0";
-	int sent = 0;
-	int id3_charset;
-
-	memset(bigbuf, '\000', sizeof(bigbuf));
-
-	/* Write header */
-	rc = filelib_write_track (writer, header1, 6);
-	if (rc != SR_SUCCESS) return rc;
-	for (i = 0; i < 4; i++) {
-	    char x = (header_size >> (3-i)*7) & 0x7F;
-	    rc = filelib_write_track (writer, (char *)&x, 1);
-	    if (rc != SR_SUCCESS) return rc;
-	}
-
-	/* ID3 V2.3 is only defined for ISO-8859-1 and UCS-2
-	   If user specifies another codeset, we will use it, and 
-	   report ISO-8859-1 in the encoding field */
-	id3_charset = is_id3_unicode(rmi);
-
-	/* Lead performer */
-        rc = write_id3v2_frame (rmi, writer, "TPE1", 
-				ti->artist, id3_charset, &sent);
-
-        /* Title */
-        rc = write_id3v2_frame (rmi, writer, "TIT2", 
-				ti->title, id3_charset, &sent);
-
-        /* Encoded by */
-        rc = write_id3v2_frame (rmi, writer, "TENC",
-				m_("Ripped with Streamripper"), 
-				id3_charset, &sent);
-	
-        /* Album */
-        rc = write_id3v2_frame (rmi, writer, "TALB", 
-				ti->album, id3_charset, &sent);
-
-        /* Track */
-        rc = write_id3v2_frame (rmi, writer, "TRCK", 
-				ti->track_a, id3_charset, &sent);
-
-        /* Year */
-        rc = write_id3v2_frame (rmi, writer, "TYER", 
-				ti->year, id3_charset, &sent);
-
-	/* Zero out padding */
-	memset (bigbuf, '\000', sizeof(bigbuf));
-
-	/* Pad up to header_size */
-	rc = filelib_write_track (writer, bigbuf, HEADER_SIZE-sent);
-	if (rc != SR_SUCCESS) {
-	    return rc;
-	}
+    if (rmi->http_info.content_type == CONTENT_TYPE_MP3 && GET_ADD_ID3V2(rmi->prefs->flags)) {
+        struct { const char *id; mchar *text; } fields[] = {
+            {"TPE1", ti->artist}, {"TIT2", ti->title},
+            {"TENC", "Ripped with Streamripper " SRVERSION},
+            {"TALB", ti->album}, {"TRCK", ti->track_a}, {"TYER", ti->year}
+        };
+        GByteArray *tag = g_byte_array_new();
+        for (size_t field = 0; field < G_N_ELEMENTS(fields); ++field) {
+            if (!fields[field].text[0])
+                continue;
+            char encoded[4 * MAX_TRACK_LEN + 4];
+            int length = string_from_gstring(rmi, encoded, sizeof(encoded),
+                fields[field].text, CODESET_ID3);
+            unsigned char header[11] = {0};
+            uint32_t payload = (uint32_t)length + 1;
+            memcpy(header, fields[field].id, 4);
+            header[4] = (unsigned char)(payload >> 24);
+            header[5] = (unsigned char)(payload >> 16);
+            header[6] = (unsigned char)(payload >> 8);
+            header[7] = (unsigned char)payload;
+            header[10] = (unsigned char)is_id3_unicode(rmi);
+            g_byte_array_append(tag, header, sizeof(header));
+            g_byte_array_append(tag, (unsigned char *)encoded, (guint)length);
+        }
+        if (tag->len < HEADER_SIZE) {
+            guint used = tag->len;
+            g_byte_array_set_size(tag, HEADER_SIZE);
+            memset(tag->data + used, 0, tag->len - used);
+        }
+        unsigned char header[10] = {'I', 'D', '3', 3, 0, 0, 0, 0, 0, 0};
+        for (unsigned int i = 0; i < 4; ++i)
+            header[6 + i] = (unsigned char)((tag->len >> ((3 - i) * 7)) & 0x7fU);
+        rc = filelib_write_track(writer, (char *)header, sizeof(header));
+        if (rc == SR_SUCCESS)
+            rc = filelib_write_track(writer, (char *)tag->data, tag->len);
+        g_byte_array_unref(tag);
+        if (rc != SR_SUCCESS)
+            return rc;
     }
 
     return SR_SUCCESS;
@@ -320,6 +306,7 @@ ripstream_mp3_start_track (RIP_MANAGER_INFO* rmi, Writer *writer)
 static error_code
 ripstream_mp3_write_oldest_node (RIP_MANAGER_INFO* rmi)
 {
+    error_code rc;
     int i;
     Cbuf3 *cbuf3 = &rmi->cbuf3;
     GQueue *write_list = cbuf3->write_list;
@@ -357,9 +344,9 @@ ripstream_mp3_write_oldest_node (RIP_MANAGER_INFO* rmi)
 
 	debug_printf ("Writer %02d: (%p), (%p,%p) %s\n", 
 	    i++, 
-	    node,
-	    writer->m_next_byte.node, 
-	    writer->m_last_byte.node,
+	    (void *)(node),
+	    (void *)(writer->m_next_byte.node),
+	    (void *)(writer->m_last_byte.node),
 	    writer->m_ti.raw_metadata);
 
 	/* Check if the writer needs to write this node */
@@ -371,35 +358,41 @@ ripstream_mp3_write_oldest_node (RIP_MANAGER_INFO* rmi)
 
 	    /* Open the file and write header */
 	    if (!writer->m_started) {
-		ripstream_mp3_start_track (rmi, writer);
+		rc = ripstream_mp3_start_track(rmi, writer);
+                if (rc != SR_SUCCESS)
+                    return rc;
 		writer->m_started = 1;
 	    }
 
 	    /* Write the data to the file. */
 	    if (writer->m_last_byte.node == node) {
 		write_sz = writer->m_last_byte.offset 
-		    - writer->m_next_byte.offset;
+		    - writer->m_next_byte.offset + 1;
 	    } else {
 		write_sz = cbuf3->chunk_size 
 		    - writer->m_next_byte.offset;
 	    }
 	    write_ptr = ((char*) node->data) + writer->m_next_byte.offset;
-	    filelib_write_track (writer, write_ptr, write_sz);
+	    rc = filelib_write_track(writer, write_ptr, write_sz);
+            if (rc != SR_SUCCESS)
+                return rc;
 
 	    /* Check if we need to end the track */
 	    if (writer->m_last_byte.node == node) {
 		/* Yes we do, so add id3, close file, etc. */
 		debug_printf ("Ending track\n");
-		ripstream_mp3_end_track (rmi, writer);
+		rc = ripstream_mp3_end_track(rmi, writer);
+                if (rc != SR_SUCCESS)
+                    return rc;
 
 		/* Free up writer */
 		free (writer);
-		write_list->head = g_list_delete_link (write_list->head, p);
+		g_queue_delete_link(write_list, p);
 
 	    } else {
 		/* Not end of track, so advance writer pointer */
 		debug_printf ("Advancing writer next node: %p -> %p\n",
-		    writer->m_next_byte.node, cbuf3->buf->head);
+		    (void *)(writer->m_next_byte.node), (void *)(cbuf3->buf->head));
 		writer->m_next_byte.node = cbuf3->buf->head;
 		writer->m_next_byte.offset = 0;
 	    }
@@ -508,7 +501,7 @@ find_sep (RIP_MANAGER_INFO* rmi,
 	- rmi->rw_start_to_cb_end);
     if (rc == SR_ERROR_BUFFER_TOO_SMALL) {
 	debug_printf ("SR_ERROR_BUFFER_TOO_SMALL 1\n");
-	debug_printf ("(%p,%d) + (%d)\n", rw_start.node, rw_start.offset,
+	debug_printf ("(%p,%lu) + (%d)\n", (void *)(rw_start.node), rw_start.offset,
 	    - rmi->rw_start_to_cb_end);
 	cbuf3_get_head (cbuf3, &rw_start);
     }
@@ -516,7 +509,7 @@ find_sep (RIP_MANAGER_INFO* rmi,
 	- rmi->rw_end_to_cb_end);
     if (rc == SR_ERROR_BUFFER_TOO_SMALL) {
 	debug_printf ("SR_ERROR_BUFFER_TOO_SMALL 2\n");
-	debug_printf ("(%p,%d) + (%d)\n", rw_end.node, rw_end.offset,
+	debug_printf ("(%p,%lu) + (%d)\n", (void *)(rw_end.node), rw_end.offset,
 	    - rmi->rw_end_to_cb_end);
 	cbuf3_get_tail (cbuf3, &rw_end);
     }
@@ -528,19 +521,27 @@ find_sep (RIP_MANAGER_INFO* rmi,
     }
 
     debug_printf (
-	"search window : [%p,%d] to [%p,%d] (%lu bytes)\n",
-	rw_start.node,
+	"search window : [%p,%lu] to [%p,%lu] (%lu bytes)\n",
+	(void *)(rw_start.node),
 	rw_start.offset,
-	rw_end.node,
+	(void *)(rw_end.node),
 	rw_end.offset,
 	rw_size
     );
 
     if (rmi->http_info.content_type != CONTENT_TYPE_MP3) {
-	long midpoint = rw_size / 2;
-	debug_printf ("(not mp3) taking middle: sw_sil=%d\n", midpoint);
-	cbuf3_pointer_add (cbuf3, end_of_previous, &rw_start, midpoint - 1);
-	cbuf3_pointer_add (cbuf3, start_of_next, &rw_start, midpoint);
+        size_t boundary = 0;
+        unsigned char *buffer = malloc(rw_size);
+        if (!buffer)
+            return SR_ERROR_CANT_ALLOC_MEMORY;
+        rc = cbuf3_peek(cbuf3, (char *)buffer, &rw_start, rw_size);
+        if (rc == SR_SUCCESS && !sr_adts_boundary(buffer, rw_size, rw_size / 2, &boundary))
+            rc = SR_ERROR_UNSUPPORTED_FORMAT;
+        free(buffer);
+        if (rc != SR_SUCCESS)
+            return rc;
+        cbuf3_pointer_add(cbuf3, end_of_previous, &rw_start, (long)boundary - 1);
+        cbuf3_pointer_add(cbuf3, start_of_next, &rw_start, (long)boundary);
     } else {
 	u_long bufsize = rw_size;
 	char* buf = (char*) malloc (bufsize);
@@ -577,12 +578,28 @@ find_sep (RIP_MANAGER_INFO* rmi,
 		&pos1, &pos2);
 	}
 
+        if (rc != SR_SUCCESS) {
+            free(buf);
+            return rc;
+        }
 	cbuf3_pointer_add (cbuf3, end_of_previous, &rw_start, pos1);
 	cbuf3_pointer_add (cbuf3, start_of_next, &rw_start, pos2);
 	free(buf);
     }
 
     return SR_SUCCESS;
+}
+
+static void
+id3v1_text(char *destination, size_t capacity, const char *text)
+{
+    gsize size = 0;
+    char *encoded = g_convert_with_fallback(text, -1, "ISO-8859-1", "UTF-8",
+        "?", NULL, &size, NULL);
+    if (encoded) {
+        memcpy(destination, encoded, MIN(size, capacity));
+        g_free(encoded);
+    }
 }
 
 static error_code
@@ -592,18 +609,14 @@ ripstream_mp3_end_track (RIP_MANAGER_INFO* rmi,
     error_code rc;
 
     /* Add id3v1 if requested */
-    if (GET_ADD_ID3V1(rmi->prefs->flags)) {
+    if (rmi->http_info.content_type == CONTENT_TYPE_MP3 && GET_ADD_ID3V1(rmi->prefs->flags)) {
 	ID3V1Tag id3v1;
 	memset (&id3v1, '\000',sizeof(id3v1));
 	strncpy (id3v1.tag, "TAG", strlen("TAG"));
-	string_from_gstring (rmi, id3v1.artist, sizeof(id3v1.artist),
-	    writer->m_ti.artist, CODESET_ID3);
-	string_from_gstring (rmi, id3v1.songtitle, sizeof(id3v1.songtitle),
-	    writer->m_ti.title, CODESET_ID3);
-	string_from_gstring (rmi, id3v1.album, sizeof(id3v1.album),
-	    writer->m_ti.album, CODESET_ID3);
-	string_from_gstring (rmi, id3v1.year, sizeof(id3v1.year),
-	    writer->m_ti.year, CODESET_ID3);
+	id3v1_text(id3v1.artist, sizeof(id3v1.artist), writer->m_ti.artist);
+	id3v1_text(id3v1.songtitle, sizeof(id3v1.songtitle), writer->m_ti.title);
+	id3v1_text(id3v1.album, sizeof(id3v1.album), writer->m_ti.album);
+	id3v1_text(id3v1.year, sizeof(id3v1.year), writer->m_ti.year);
 	id3v1.genre = (char) 0xFF; // see http://www.id3.org/id3v2.3.0.html#secA
 	rc = filelib_write_track (writer, (char *)&id3v1, sizeof(id3v1));
 	if (rc != SR_SUCCESS) {
@@ -620,59 +633,20 @@ ripstream_mp3_end_track (RIP_MANAGER_INFO* rmi,
     return SR_SUCCESS;
 }
 
-// Write data to a new frame, using tag_name e.g. TPE1, and increment
-// *sent with the number of bytes written
-static error_code
-write_id3v2_frame (RIP_MANAGER_INFO *rmi, 
-		   Writer *writer, char* tag_name, mchar* data,
-		   int charset, int *sent)
-{
-    int ret;
-    int rc;
-    char bigbuf[HEADER_SIZE] = "";
-    ID3V2frame id3v2frame;
-#ifndef WIN32
-    __uint32_t framesize = 0;
-#else
-    unsigned long int framesize = 0;
-#endif
-
-    memset(&id3v2frame, '\000', sizeof(id3v2frame));
-    strncpy(id3v2frame.id, tag_name, 4);
-    id3v2frame.pad[2] = charset;
-    rc = string_from_gstring (rmi, bigbuf, HEADER_SIZE, data, CODESET_ID3);
-    framesize = htonl (rc+1);
-    ret = filelib_write_track (writer, (char *)&(id3v2frame.id), 4);
-    if (ret != SR_SUCCESS) return ret;
-    *sent += 4;
-    ret = filelib_write_track (writer, (char *)&(framesize),
-			      sizeof(framesize));
-    if (ret != SR_SUCCESS) return ret;
-    *sent += sizeof(framesize);
-    ret = filelib_write_track (writer, (char *)&(id3v2frame.pad), 3);
-    if (ret != SR_SUCCESS) return ret;
-    *sent += 3;
-    ret = filelib_write_track (writer, bigbuf, rc);
-    if (ret != SR_SUCCESS) return ret;
-    *sent += rc;
-
-    return SR_SUCCESS;
-}
-
 /* First time through, need to determine the bitrate. 
    The bitrate is needed to do the track splitting parameters 
    properly in seconds.  See the readme file for details.  */
 /* GCS FIX: For VBR streams, the detected_bitrate is unreliable */
 static error_code
-ripstream_mp3_check_bitrate (RIP_MANAGER_INFO* rmi)
+ripstream_mp3_check_bitrate (RIP_MANAGER_INFO* rmi, const char *audio)
 {
     error_code rc;
-    unsigned long test_bitrate;
+    unsigned long test_bitrate = 0;
 
     debug_printf("Querying stream for bitrate - first time.\n");
 
     if (rmi->http_info.content_type == CONTENT_TYPE_MP3) {
-	find_bitrate(&test_bitrate, rmi->getbuffer, rmi->getbuffer_size);
+	find_bitrate(&test_bitrate, audio, rmi->getbuffer_size);
 	rmi->detected_bitrate = test_bitrate / 1000;
 	debug_printf("Detected bitrate: %d\n",rmi->detected_bitrate);
     } else {
@@ -862,33 +836,33 @@ compute_cbuf2_size (RIP_MANAGER_INFO* rmi,
     /* mi_to_mic is the "half of a meta-inf" from the meta inf 
        change to the previous (non-changed) meta inf */
     mi_to_mic = meta_interval / 2;
-    debug_printf ("mi_to_mic: %d\n", mi_to_mic);
+    debug_printf ("mi_to_mic: %ld\n", mi_to_mic);
 
     /* compute the search window size (sws) */
     sws = ms_to_bytes (xs_search_window_1, bitrate) 
 	    + ms_to_bytes (xs_search_window_2, bitrate);
-    debug_printf ("sws: %d\n", sws);
+    debug_printf ("sws: %ld\n", sws);
 
     /* compute the silence length (sl) */
     sl = ms_to_bytes (xs_silence_length, bitrate);
-    debug_printf ("sl: %d\n", sl);
+    debug_printf ("sl: %ld\n", sl);
 
     /* compute padding */
     prepad = ms_to_bytes (xs_padding_1, bitrate);
     postpad = ms_to_bytes (xs_padding_2, bitrate);
-    debug_printf ("padding: %d %d\n", prepad, postpad);
+    debug_printf ("padding: %ld %ld\n", prepad, postpad);
 
     /* compute offset */
     offset = ms_to_bytes (xs_offset,bitrate);
-    debug_printf ("offset: %d\n", offset);
+    debug_printf ("offset: %ld\n", offset);
 
     /* compute interval from mi to search window */
     mic_to_sw_start = - mi_to_mic + offset 
 	    - ms_to_bytes(xs_search_window_1,bitrate);
     mic_to_sw_end = - mi_to_mic + offset 
 	    + ms_to_bytes(xs_search_window_2,bitrate);
-    debug_printf ("mic_to_sw_start: %d\n", mic_to_sw_start);
-    debug_printf ("mic_to_sw_end: %d\n", mic_to_sw_end);
+    debug_printf ("mic_to_sw_start: %ld\n", mic_to_sw_start);
+    debug_printf ("mic_to_sw_end: %ld\n", mic_to_sw_end);
 
     /* compute interval from mi to required window */
     mic_to_rw_start = mic_to_sw_start + sl / 2 - prepad;
@@ -899,8 +873,8 @@ compute_cbuf2_size (RIP_MANAGER_INFO* rmi,
     if (mic_to_rw_end < mic_to_sw_end) {
 	mic_to_rw_end = mic_to_sw_end;
     }
-    debug_printf ("mic_to_rw_start: %d\n", mic_to_rw_start);
-    debug_printf ("mic_to_rw_end: %d\n", mic_to_rw_end);
+    debug_printf ("mic_to_rw_start: %ld\n", mic_to_rw_start);
+    debug_printf ("mic_to_rw_end: %ld\n", mic_to_rw_end);
 
     /* if rw is not long enough, make it longer */
     rw_len = mic_to_rw_end - mic_to_rw_start;
@@ -909,8 +883,8 @@ compute_cbuf2_size (RIP_MANAGER_INFO* rmi,
 	long end_extra = meta_interval - start_extra;
 	mic_to_rw_start -= start_extra;
 	mic_to_rw_end += end_extra;
-	debug_printf ("mic_to_rw_start (2): %d\n", mic_to_rw_start);
-	debug_printf ("mic_to_rw_end (2): %d\n", mic_to_rw_end);
+	debug_printf ("mic_to_rw_start (2): %ld\n", mic_to_rw_start);
+	debug_printf ("mic_to_rw_end (2): %ld\n", mic_to_rw_end);
     }
 
     /* This code replaces the 3 cases (see OBSOLETE in gcs_notes.txt) */
@@ -931,9 +905,9 @@ compute_cbuf2_size (RIP_MANAGER_INFO* rmi,
     if (rmi->cbuf2_size < 3) {
 	rmi->cbuf2_size = 3;
     }
-    debug_printf ("mic_to_cb_start: %d\n", mic_to_cb_start * meta_interval);
-    debug_printf ("mic_to_cb_end: %d\n", mic_to_cb_end * meta_interval);
-    debug_printf ("CBUF2 (BLOCKS): %d:%d -> %d\n", mic_to_cb_start,
+    debug_printf ("mic_to_cb_start: %ld\n", mic_to_cb_start * meta_interval);
+    debug_printf ("mic_to_cb_end: %ld\n", mic_to_cb_end * meta_interval);
+    debug_printf ("CBUF2 (BLOCKS): %ld:%ld -> %d\n", mic_to_cb_start,
 		  mic_to_cb_end, rmi->cbuf2_size);
 
     /* Set some global variables to be used by splitting algorithm */

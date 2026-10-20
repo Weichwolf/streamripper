@@ -1,0 +1,18 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+set -eu
+root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+case "${1:-}" in
+    progulus) url='http://centova.radioservers.biz:8063/listen.pls?sid=1' ;;
+    armory) url='https://zeno.fm/radio/the-armory/' ;;
+    courtyard) url='https://zeno.fm/radio/the-courtyard/' ;;
+    swisspop) url='https://www.radioswisspop.ch/en' ;;
+    *) printf 'Usage: %s {progulus|armory|courtyard|swisspop} [streamripper options]\n' "$0" >&2; exit 2 ;;
+esac
+shift
+binary=${STREAMRIPPER_BINARY:-"$root/build/release/streamripper"}
+if [ ! -x "$binary" ]; then
+    printf 'Build first: cmake --preset release && cmake --build --preset release\n' >&2
+    exit 1
+fi
+exec "$binary" "$url" --codeset-metadata=auto "$@"

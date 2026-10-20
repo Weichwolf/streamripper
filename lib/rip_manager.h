@@ -23,7 +23,7 @@
 #include "errors.h"
 #include "sr_compat.h"
 
-#define SRVERSION	"1.65.0-alpha"
+/* SRVERSION is generated from VERSION by CMake. */
 
 #if defined (WIN32)
 #define SRPLATFORM      "windows"

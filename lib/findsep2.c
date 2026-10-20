@@ -69,11 +69,13 @@ typedef struct DECODE_STRUCTst
     long  samplerate;
     short prev_sample;
     LIST frame_list;
+    int fed;
     unsigned short* maxvolume_buffer;
     unsigned long maxvolume_buffer_offs;
     int maxvolume_buffer_depth;
     int max_search_depth;
     MIN_POS* min_maxvolume_buffer;
+    unsigned short peak_volume;
 } DECODE_STRUCT;
 
 typedef struct GET_BITRATE_STRUCTst
@@ -125,14 +127,23 @@ findsep_silence_2 (const char* mpgbuf,
 		 u_long* pos2
 		 )
 {
-    DECODE_STRUCT ds;
+    DECODE_STRUCT ds = {0};
     struct mad_decoder decoder;
     int result;
     int bestsil;
     int i;
     double delta = 1;
     
-    ds.mpgbuf = (unsigned char*)mpgbuf;
+    if (!mpgbuf || mpgsize <= 0 || !pos1 || !pos2 || len_to_sw < 0 ||
+        searchwindow <= 0 || silence_length <= 0 ||
+        len_to_sw > 3600000 || searchwindow > 3600000 || silence_length > 3600000 ||
+        padding1 < -3600000 || padding1 > 3600000 ||
+        padding2 < -3600000 || padding2 > 3600000)
+        return SR_ERROR_INVALID_PARAM;
+    ds.mpgbuf = calloc((size_t)mpgsize + MAD_BUFFER_GUARD, 1);
+    if (!ds.mpgbuf)
+        return SR_ERROR_CANT_ALLOC_MEMORY;
+    memcpy(ds.mpgbuf, mpgbuf, (size_t)mpgsize);
     ds.mpgsize = mpgsize;
     ds.pcmpos = 0;
     ds.mpgpos= 0;
@@ -148,7 +159,7 @@ findsep_silence_2 (const char* mpgbuf,
     ds.min_maxvolume_buffer = 0;
     INIT_LIST_HEAD (&ds.frame_list);
 
-    debug_printf ("FINDSEP 2: %p -> %p (%d)\n", mpgbuf, mpgbuf+mpgsize, mpgsize);
+    debug_printf ("FINDSEP 2: %p -> %p (%ld)\n", (void *)(mpgbuf), (void *)(mpgbuf+mpgsize), mpgsize);
 
 #if defined (MAKE_DUMP_MP3)
     {
@@ -168,10 +179,17 @@ findsep_silence_2 (const char* mpgbuf,
 		     NULL /* message */);
     result = mad_decoder_run(&decoder, MAD_DECODER_MODE_SYNC);
     mad_decoder_finish(&decoder);
+    if (result != 0 || list_empty(&ds.frame_list) || !ds.samplerate) {
+        free_frame_list(&ds);
+        free(ds.mpgbuf);
+        free(ds.maxvolume_buffer);
+        free(ds.min_maxvolume_buffer);
+        return SR_ERROR_DECODE_FAILURE;
+    }
 
-    debug_printf ("total length:    %d\n", ds.pcmpos);
-    debug_printf ("silence_length:  %d ms\n", ds.silence_ms);
-    debug_printf ("silence_samples: %d\n", ds.silence_samples);
+    debug_printf ("total length:    %lu\n", ds.pcmpos);
+    debug_printf ("silence_length:  %ld ms\n", ds.silence_ms);
+    debug_printf ("silence_samples: %ld\n", ds.silence_samples);
 
     /* Search through siltrackers to find minimum volume point */
     assert(ds.mpgsize != 0);
@@ -205,7 +223,11 @@ findsep_silence_2 (const char* mpgbuf,
             * 1000.0 / (double)(ds.samplerate * (1 << bestsil)));
 
     /* Now that we have the silence position, let's add the padding */
-    apply_padding (&ds, ds.min_maxvolume_buffer[bestsil].pos,
+    unsigned long split = ds.min_maxvolume_buffer[bestsil].pos;
+    if (!split || ds.min_maxvolume_buffer[bestsil].volume > ds.peak_volume / 4)
+        split = MIN(ds.len_to_sw_start_samp +
+            (ds.len_to_sw_end_samp - ds.len_to_sw_start_samp) / 2, ds.pcmpos / 2);
+    apply_padding (&ds, split,
             padding1, padding2, pos1, pos2);
 
     /* Free the max volume buffers */
@@ -214,52 +236,29 @@ findsep_silence_2 (const char* mpgbuf,
 
     /* Free the list of frame info */
     free_frame_list (&ds);
+    free(ds.mpgbuf);
 
     return SR_SUCCESS;
 }
 
 static void
-apply_padding (DECODE_STRUCT* ds,
-	       unsigned long silsplit,
-	       long padding1,
-	       long padding2,
-	       u_long* pos1, 
-	       u_long* pos2
-	       )
+apply_padding(DECODE_STRUCT *ds, unsigned long silsplit,
+    long padding1, long padding2, u_long *pos1, u_long *pos2)
 {
-    /* Compute positions in samples */
-    FRAME_LIST *pos;
-    long pos1s, pos2s;
-
-    pos1s = silsplit
-	    + padding1 * (ds->samplerate/1000);
-    pos2s = silsplit
-	    - padding2 * (ds->samplerate/1000);
-
-    debug_printf ("Applying padding: p1,p2 = (%d,%d), pos1s,pos2s = (%d,%d)\n", padding1, padding2, pos1s, pos2s);
-
-    /* GCS FIX: Need to check for pos == null */
-    /* GCS FIX: Watch out for -1, might have mem error! */
-    pos = list_entry (ds->frame_list.next, FRAME_LIST, m_list);
-    if (pos1s < pos->m_pcmpos) {
-	*pos1 = pos->m_framepos - ds->mpgbuf - 1;
+    long long target1 = (long long)silsplit + padding1 * ds->samplerate / 1000;
+    long long target2 = (long long)silsplit - padding2 * ds->samplerate / 1000;
+    unsigned long boundary1 = 0, boundary2 = 0;
+    struct list_head *node;
+    list_for_each(node, &ds->frame_list) {
+        FRAME_LIST *frame = list_entry(node, FRAME_LIST, m_list);
+        unsigned long offset = (unsigned long)(frame->m_framepos - ds->mpgbuf);
+        if ((long long)frame->m_pcmpos <= target1)
+            boundary1 = offset;
+        if ((long long)frame->m_pcmpos <= target2)
+            boundary2 = offset;
     }
-    if (pos2s < pos->m_pcmpos) {
-	*pos2 = pos->m_framepos - ds->mpgbuf;
-    }
-    list_for_each_entry (pos, FRAME_LIST, &(ds->frame_list), m_list) {
-	if (pos1s >= pos->m_pcmpos) {
-	    *pos1 = pos->m_framepos - ds->mpgbuf - 1;
-	}
-	if (pos2s >= pos->m_pcmpos) {
-	    *pos2 = pos->m_framepos - ds->mpgbuf;
-	}
-    }
-    debug_printf ("pos1, pos2 = %d,%d (%d) (%02x%02x)\n",
-		  *pos1, *pos2, 
-		  *pos1 - *pos2, 
-		  ds->mpgbuf[*pos2], 
-		  ds->mpgbuf[*pos2+1]);
+    *pos1 = boundary1 ? boundary1 - 1 : 0;
+    *pos2 = boundary2;
 }
 
 static void 
@@ -277,54 +276,11 @@ free_frame_list (DECODE_STRUCT* ds)
 static enum mad_flow
 input(void *data, struct mad_stream *ms)
 {
-    DECODE_STRUCT *ds = (DECODE_STRUCT *)data;
-    long frameoffset = 0;
-    long espnextpos = ds->mpgpos+READSIZE;
-
-    /* GCS FIX: This trims the last READSIZE from consideration */
-    if (espnextpos > ds->mpgsize) {
-	return MAD_FLOW_STOP;
-    }
-
-    if (ms->next_frame) {
-	frameoffset = &(ds->mpgbuf[ds->mpgpos]) - ms->next_frame;
-        /* GCS July 8, 2004
-	       This is the famous frameoffset != READSIZE bug.
-	       What appears to be happening is libmad is not syncing 
-	       properly on the broken initial frame.  Therefore, 
-	       if there is no header yet (hence no ds->samplerate),
-	       we'll nudge along the buffer to try to resync.
-         */
-	if (frameoffset == READSIZE) {
-	    if (!ds->samplerate) {
-		frameoffset--;
-	    } else {
-		FILE* fp;
-		debug_printf ("%p | %p | %p | %p | %d\n",
-		    ds->mpgbuf, ds->mpgpos, &(ds->mpgbuf[ds->mpgpos]), 
-		    ms->next_frame, frameoffset);
-    		fprintf (stderr, "ERROR: frameoffset != READSIZE\n");
-		debug_printf ("ERROR: frameoffset != READSIZE\n");
-		fp = fopen ("gcs1.txt","w");
-		fwrite(ds->mpgbuf,1,ds->mpgsize,fp);
-		fclose(fp);
-		exit (-1);
-	    }
-	}
-    }
-    debug_printf ("%p | %p | %p |< %p | %p >| %d\n",
-		  ds->mpgbuf, 
-		  ds->mpgpos, 
-		  &(ds->mpgbuf[ds->mpgpos]), 
-		  ms->this_frame, 
-		  ms->next_frame, 
-		  frameoffset);
-
-    mad_stream_buffer (ms, (const unsigned char*)
-		       (ds->mpgbuf+ds->mpgpos)-frameoffset, 
-		       READSIZE);
-    ds->mpgpos += READSIZE - frameoffset;
-
+    DECODE_STRUCT *ds = data;
+    if (ds->fed)
+        return MAD_FLOW_STOP;
+    ds->fed = 1;
+    mad_stream_buffer(ms, ds->mpgbuf, (unsigned long)ds->mpgsize + MAD_BUFFER_GUARD);
     return MAD_FLOW_CONTINUE;
 }
 
@@ -385,6 +341,7 @@ search_for_silence (DECODE_STRUCT *ds, unsigned short vol)
     unsigned long node_pos = ds->maxvolume_buffer_offs;
     int i;
 
+    ds->peak_volume = MAX(ds->peak_volume, vol);
     insert_value (ds, vol, ds->pcmpos);
 
     window_size = 1;
@@ -421,10 +378,13 @@ scale(mad_fixed_t sample)
 static enum mad_flow 
 filter (void *data, struct mad_stream const *ms, struct mad_frame *frame)
 {
+    (void)frame;
     DECODE_STRUCT *ds = (DECODE_STRUCT *)data;
     FRAME_LIST* fl;
 
     fl = (FRAME_LIST*) malloc (sizeof(FRAME_LIST));
+    if (!fl)
+        return MAD_FLOW_BREAK;
     fl->m_framepos = ms->this_frame;
     fl->m_samples = 0;
     fl->m_pcmpos = 0;
@@ -445,11 +405,12 @@ static enum mad_flow
 output (void *data, struct mad_header const *header,
 	struct mad_pcm *pcm)
 {
+    (void)header;
     DECODE_STRUCT *ds = (DECODE_STRUCT *)data;
     FRAME_LIST *fl;
     unsigned int nchannels, nsamples;
     mad_fixed_t const *left_ch, *right_ch;
-    static signed int sample;
+    signed int sample;
     double v;
 
     nchannels = pcm->channels;
@@ -464,9 +425,9 @@ output (void *data, struct mad_header const *header,
 
     if (ds->pcmpos > ds->len_to_sw_start_samp
 	&& ds->pcmpos < ds->len_to_sw_end_samp) {
-	debug_printf ("* %d\n", ds->pcmpos);
+	debug_printf ("* %lu\n", ds->pcmpos);
     } else {
-	debug_printf ("- %d\n", ds->pcmpos);
+	debug_printf ("- %lu\n", ds->pcmpos);
     }
 #if defined (commentout)
 #endif
@@ -479,16 +440,18 @@ output (void *data, struct mad_header const *header,
 
 	if (nchannels == 2) {
 	    // make mono
-	    sample = (sample+scale(*right_ch++))/2;
+	    int right = scale(*right_ch++);
+            if (abs(right) > abs(sample))
+                sample = right;
 	}
 
 	// get the instantanous volume
-	v = (ds->prev_sample*ds->prev_sample)+(sample*sample);
+	v = (double)ds->prev_sample * ds->prev_sample + (double)sample * sample;
 	v = sqrt(v / 2);
 	if (ds->pcmpos > ds->len_to_sw_start_samp
 	    && ds->pcmpos < ds->len_to_sw_end_samp)
 	{
-	    search_for_silence(ds, (short) v);
+	    search_for_silence(ds, (unsigned short) v);
 	}
 	ds->pcmpos++;
 	ds->prev_sample = sample;
@@ -550,10 +513,9 @@ mad_flow header(void *data, struct mad_header const *pheader)
     if (!ds->samplerate) {
 	ds->samplerate = pheader->samplerate;
 	ds->silence_samples =
-        next_power_of_two(ds->silence_ms * (ds->samplerate/1000));
-	ds->len_to_sw_start_samp = ds->len_to_sw_ms * (ds->samplerate/1000);
-	ds->len_to_sw_end_samp = (ds->len_to_sw_ms + ds->searchwindow_ms) 
-		* (ds->samplerate/1000);
+        next_power_of_two(ds->silence_ms * ds->samplerate / 1000);
+	ds->len_to_sw_start_samp = ds->len_to_sw_ms * ds->samplerate / 1000;
+	ds->len_to_sw_end_samp = (ds->len_to_sw_ms + ds->searchwindow_ms) * ds->samplerate / 1000;
 	init_maxvolume_buffer(ds);
 	debug_printf ("Setting samplerate: %ld\n",ds->samplerate);
     }
@@ -563,6 +525,8 @@ mad_flow header(void *data, struct mad_header const *pheader)
 static enum mad_flow
 error(void *data, struct mad_stream *ms, struct mad_frame *frame)
 {
+    (void)data;
+    (void)frame;
     if (MAD_RECOVERABLE(ms->error)) {
 	debug_printf("mad error 0x%04x\n", ms->error);
 	return MAD_FLOW_CONTINUE;

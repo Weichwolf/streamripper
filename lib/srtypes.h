@@ -18,6 +18,7 @@
 #define __SRTYPES_H__
 
 #include <glib.h>
+#include <stdatomic.h>
 #include "sr_config.h"
 #include "sr_compat.h"
 #include "list.h"
@@ -82,7 +83,7 @@ typedef unsigned int uint32_t;
 #define MAX_VERSION_LEN		256
 #define MAX_ICY_STRING		4024
 #define MAX_SERVER_LEN		1024
-#define MAX_TRACK_LEN		SR_MAX_PATH /* GCS - be careful here... */
+#define MAX_TRACK_LEN           4096 /* ICY metadata may contain 255 * 16 bytes. */
 #define MAX_URI_STRING		1024
 #define MAX_ERROR_STR           (4096)
 #define MAX_USERAGENT_STR	1024
@@ -227,6 +228,7 @@ typedef int SOCKET;
 typedef struct HSOCKETst
 {
 	SOCKET	s;
+        struct sr_http_stream *http;
 	BOOL	closed;
 } HSOCKET;
 
@@ -314,6 +316,7 @@ struct OGG_PAGE_LIST_struct
 typedef struct cbuf3 Cbuf3;
 struct cbuf3 {
     HSEM        sem;
+    int sem_initialized;
 
     GQueue      *buf;             /**< Filled portion of buffer */
     GQueue      *free_list;       /**< Free chunks */
@@ -365,6 +368,7 @@ struct writer
     Cbuf3_pointer    m_next_byte;
     Cbuf3_pointer    m_last_byte;
     FHANDLE          m_file;
+    char             incomplete_filename[SR_MAX_PATH];
     TRACK_INFO       m_ti;
 };
 
@@ -553,7 +557,7 @@ struct RIP_MANAGER_INFOst
 #endif
 
     /* Is rip manager active? */
-    int started;
+    atomic_int started;
     HSEM started_sem;
 
     /* Info from stream http header.  It's used for generating relay 
@@ -638,6 +642,7 @@ struct RIP_MANAGER_INFOst
 
 #if OGG_VORBIS_FOUND
     /* Ogg state, used by ripogg.c */
+    int ogg_initialized;
     ogg_sync_state ogg_sync;
     ogg_page ogg_pg;
     stream_processor stream;

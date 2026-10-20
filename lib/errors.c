@@ -122,12 +122,14 @@ errors_init (void)
     SET_ERR_STR("SR_ERROR_CANT_PARSE_M3U",                      0x41);
     SET_ERR_STR("SR_ERROR_CANT_CREATE_SOCKET",                  0x42);
     SET_ERR_STR("SR_ERROR_CREATE_PIPE_FAILED",                  0x43);
+    SET_ERR_STR("SR_ERROR_ABORT_PIPE_SIGNALLED",                0x44);
+    SET_ERR_STR("Unsupported stream format (supported: MP3, ADTS AAC, Ogg/Vorbis)", 0x45);
 }
 
 char*
 errors_get_string (error_code code)
 {
-    if (code > 0 || code < -NUM_ERROR_CODES)
+    if (code > 0 || code <= -NUM_ERROR_CODES)
         return NULL;
     return m_error_str[-code];
 }

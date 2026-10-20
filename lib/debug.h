@@ -26,7 +26,7 @@
 void debug_open (void);
 void debug_set_filename (char* filename);
 void debug_close (void);
-void debug_printf (char* fmt, ...);
+void debug_printf (char* fmt, ...) G_GNUC_PRINTF(1, 2);
 //void debug_mprintf (mchar* fmt, ...);
 void debug_enable (void);
 void debug_print_error (void);

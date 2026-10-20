@@ -19,6 +19,7 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <time.h>
+#include <curl/curl.h>
 #if WIN32
 #include <winsock2.h>
 #else
@@ -42,6 +43,7 @@
 
 #include "srtypes.h"
 #include "socklib.h"
+#include "http_stream.h"
 #include "threadlib.h"
 #include "sr_compat.h"
 #include "debug.h"
@@ -57,7 +59,7 @@
  * Function definitions
  ****************************************************************************/
 error_code
-socklib_init()
+socklib_init(void)
 {
 #if WIN32
     WORD wVersionRequested;
@@ -70,7 +72,7 @@ socklib_init()
         return SR_ERROR_WIN32_INIT_FAILURE;
 #endif
 
-    return SR_SUCCESS;
+    return curl_global_init(CURL_GLOBAL_DEFAULT) == CURLE_OK ? SR_SUCCESS : SR_ERROR_CONNECT_FAILED;
 }
 
 /* Try to find the local interface to bind to */
@@ -108,6 +110,7 @@ error_code
 socklib_open (HSOCKET *socket_handle, char *host, int port, 
 	      char *if_name, int timeout)
 {
+    (void)timeout;
     int rc;
     struct sockaddr_in address, local;
     struct hostent *hp;
@@ -119,6 +122,7 @@ socklib_open (HSOCKET *socket_handle, char *host, int port,
     /* On error:
        Unix returns -1 and sets errno.
        Windows??? */
+    socket_handle->http = NULL;
     socket_handle->s = socket(AF_INET, SOCK_STREAM, 0);
     if (socket_handle->s == SOCKET_ERROR) {
 	debug_printf ("socket() failed\n");
@@ -192,14 +196,21 @@ socklib_open (HSOCKET *socket_handle, char *host, int port,
 }
 
 void
-socklib_cleanup()
+socklib_cleanup(void)
 {
+    curl_global_cleanup();
     WSACleanup();
 }
 
 void
 socklib_close(HSOCKET *socket_handle)
 {
+    if (socket_handle->http) {
+        http_stream_close(socket_handle);
+        return;
+    }
+    if (socket_handle->closed)
+        return;
     closesocket(socket_handle->s);
     socket_handle->closed = TRUE;
 }
@@ -280,6 +291,8 @@ socklib_recvall (RIP_MANAGER_INFO* rmi, HSOCKET *socket_handle,
     fd_set fds;
     struct timeval tv;
     
+    if (socket_handle->http)
+        return http_stream_read(rmi, socket_handle, buffer, size);
     sock = socket_handle->s;
     FD_ZERO(&fds);
     while(size) {

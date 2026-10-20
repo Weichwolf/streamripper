@@ -18,6 +18,15 @@
  */
 #ifndef __sr_config_h__
 #define __sr_config_h__
+#define SRVERSION "@SR_RELEASE_VERSION@"
+
+#define HAVE_UINT32_T 1
+#define STDC_HEADERS 1
+#cmakedefine UNIX 1
+#ifdef UNIX
+#define HAVE_UNISTD_H 1
+#define HAVE_LANGINFO_CODESET 1
+#endif
 
 #cmakedefine OGG_FOUND 1
 #cmakedefine VORBIS_FOUND 1
