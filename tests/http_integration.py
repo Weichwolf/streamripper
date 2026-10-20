@@ -18,6 +18,15 @@ PAYLOAD = bytes(i % 251 for i in range(250000))
 class Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
+    def handle(self):
+        try:
+            super().handle()
+        except ssl.SSLError as error:
+            # Aborting a transfer deliberately closes the client without TLS
+            # close_notify. Other TLS errors must still fail visibly.
+            if error.reason != "UNEXPECTED_EOF_WHILE_READING":
+                raise
+
     def log_message(self, *_args):
         pass
 
