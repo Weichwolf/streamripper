@@ -39,6 +39,8 @@ servers. It checks actual libcurl reads, fragmented/chunked data with trailers,
 compression, relative redirects, PLS/M3U, TLS trust and rejection, redirect and
 playlist cycles, missing resources, stalls, unsupported HLS/JSON, and excessive
 ICY metadata intervals. It also checks shutdown before the first audio bytes.
+A bounded burst with a valid 45000-byte ICY interval must reach the track file
+without waiting for the historical 24-block startup buffer to fill.
 
 The complete CLI records synthetic MP3 with both splitters (including overlap
 padding), ADTS AAC, and Ogg/Vorbis. Completed MP3/AAC tracks are walked frame by

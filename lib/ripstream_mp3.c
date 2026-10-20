@@ -107,7 +107,9 @@ ripstream_mp3_rip (RIP_MANAGER_INFO* rmi)
     debug_printf ("RIPSTREAM_RIP_MP3: top of loop\n");
 
     if (rmi->ripstream_first_time_through) {
-	u_long min_chunks = 24;
+        /* Grow to the actual split-search window after detecting the bitrate.
+           An arbitrary 24-block floor delays disk writes for large ICY intervals. */
+	u_long min_chunks = 3;
 	rc = cbuf3_init (&rmi->cbuf3, rmi->http_info.content_type,
 			 GET_MAKE_RELAY(rmi->prefs->flags),
 			 rmi->getbuffer_size,

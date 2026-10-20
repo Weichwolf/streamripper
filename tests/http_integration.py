@@ -4,6 +4,7 @@ import http.server
 import gzip
 import os
 from pathlib import Path
+import signal
 import ssl
 import subprocess
 import sys
@@ -22,6 +23,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = self.path.split("?", 1)[0]
+        if path == "/large-meta":
+            audio = (Path(__file__).parent / "fixtures" / "stereo-gap.mp3").read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "audio/mpeg")
+            self.send_header("icy-br", "96")
+            self.send_header("icy-metaint", "45000")
+            self.end_headers()
+            try:
+                # A bounded burst must reach disk without filling 24 large blocks.
+                payload = (audio * (450000 // len(audio) + 1))[:450000]
+                for start in range(0, len(payload), 45000):
+                    self.wfile.write(payload[start:start + 45000] + b"\0")
+                self.wfile.flush()
+                time.sleep(5)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            return
         if path in ("/ogg", "/opus"):
             audio = (Path(__file__).parent / "fixtures" / ("vorbis.ogg" if path == "/ogg" else "unsupported-opus.ogg")).read_bytes()
             self.send_response(200)
@@ -173,18 +191,42 @@ def main():
                     run(binary, base + path, success=False, env=env)
                 if not secure:
                     cli = sys.argv[2]
+                    output = tmp / "large-meta-recording"
+                    result = subprocess.run([cli, base + "/large-meta", "-d", str(output), "-l", "3"],
+                        capture_output=True, timeout=10,
+                        env=dict(env, XDG_CONFIG_HOME=str(tmp / "large-meta-profile")))
+                    assert result.returncode == 0, (result.stdout, result.stderr)
+                    assert b"Sanitizer" not in result.stderr and b"runtime error:" not in result.stderr, result.stderr
+                    assert any(p.stat().st_size > 4096 for p in output.rglob("*.mp3") if p.is_file()), result.stdout
                     for codec, algorithm in (("radio", 1), ("radio", 2), ("aac", 1), ("longradio", 1)):
                         output = tmp / f"recordings-{codec}-{algorithm}"
                         profile = tmp / f"config-{codec}-{algorithm}"
-                        args = [cli, base + "/" + codec, "-d", str(output), "-l", "6", "--codeset-metadata=auto"]
+                        args = [cli, base + "/" + codec, "-d", str(output), "-l", "25", "--codeset-metadata=auto"]
                         if algorithm == 2:
                             args.extend(["--xs2", "--xs-padding=300:300"])
                         if codec == "radio":
                             args.append("--with-id3v1")
                         if codec == "longradio":
                             args.extend(["-a", "show"])
-                        result = subprocess.run(args, capture_output=True, timeout=15,
-                                                env=dict(env, XDG_CONFIG_HOME=str(profile)))
+                        # Wait for actual completed tracks rather than a CPU-sensitive
+                        # six-second throughput assumption under sanitizers.
+                        with subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                              env=dict(env, XDG_CONFIG_HOME=str(profile))) as process:
+                            deadline = time.monotonic() + 35
+                            while True:
+                                tracks = [p for p in output.rglob("*.aac" if codec == "aac" else "*.mp3")
+                                          if p.is_file() and "incomplete" not in p.parts and p.name != "show.mp3"]
+                                if len(tracks) >= 2 and process.poll() is None:
+                                    process.send_signal(signal.SIGINT)
+                                try:
+                                    stdout, stderr = process.communicate(timeout=0.1)
+                                    break
+                                except subprocess.TimeoutExpired:
+                                    if time.monotonic() > deadline:
+                                        process.kill()
+                                        process.communicate()
+                                        raise AssertionError("CLI recording did not stop")
+                            result = subprocess.CompletedProcess(args, process.returncode, stdout, stderr)
                         assert result.returncode == 0, result.stderr
                         result.stdout.decode("utf-8")
                         assert b"Sanitizer" not in result.stderr and b"runtime error:" not in result.stderr, result.stderr
