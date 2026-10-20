@@ -54,11 +54,11 @@ jobs:
         run: |
           apt-get install -y ../streamripper_*_amd64.deb
           python3 debian/tests/recording.py
+      - name: Collect Debian artifacts
+        run: |
+          mkdir -p build/debian-artifacts
+          cp ../streamripper_*.deb ../streamripper-dbgsym_*.deb ../streamripper_*.changes ../streamripper_*.buildinfo build/debian-artifacts/
       - uses: actions/upload-artifact@v7.0.2
         with:
           name: debian13-amd64
-          path: |
-            ../streamripper_*.deb
-            ../streamripper-dbgsym_*.deb
-            ../streamripper_*.changes
-            ../streamripper_*.buildinfo
+          path: build/debian-artifacts/*
