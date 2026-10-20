@@ -1,0 +1,58 @@
+Local Debian 13 package
+======================
+
+This package follows ~/Git/btop and ~/Git/octa-capture: debhelper 13, Debian
+build flags, quilt source packages and an unprivileged sbuild Trixie chroot.
+It is a local maintained-fork package, not an upload to the Debian archive.
+VERSION supplies the upstream version; debian/changelog supplies the revision.
+Prerelease hyphens become tildes so 1.65.0~rc.1 sorts before stable 1.65.0.
+
+The Debian binary links system libmad dynamically, unlike the standalone
+release tarball. dh_shlibdeps generates its runtime library dependencies.
+No libraries, services, elevated privileges or maintainer scripts are bundled.
+dh_strip generates a separate optional debug-symbol package.
+
+Install host tools:
+  sudo apt install sbuild mmdebstrap uidmap devscripts debhelper lintian autopkgtest
+
+Reuse the btop/OCTA-CAPTURE chroot, or create it once as a regular user:
+  mkdir -p ~/.cache/sbuild
+  mmdebstrap --mode=unshare --variant=buildd --include=ca-certificates \
+    --aptopt='APT::Update::Error-Mode "any"' --arch=amd64 --format=tar \
+    --skip=output/mknod trixie ~/.cache/sbuild/trixie-amd64.tar \
+    'deb https://deb.debian.org/debian trixie main' \
+    'deb https://deb.debian.org/debian trixie-updates main' \
+    'deb https://security.debian.org/debian-security trixie-security main'
+
+Build from the checkout, including intended uncommitted source changes:
+  make deb
+  # Or: python3 tools/build-debian.py --jobs 2 --output build/debian-trixie
+
+The output directory must be new. Git-ignored files and the historical
+win32/, winamp_plugin/ and makedist_win.bat payloads are excluded. The source
+archive records normalized ownership and timestamps. sbuild installs only
+declared build dependencies and runs the offline CTest suite in its chroot.
+Checksums and build provenance are recorded in .dsc, .changes and .buildinfo.
+
+Check and simulate installation before installing:
+  lintian build/debian-trixie/*.dsc build/debian-trixie/*_amd64.changes
+  autopkgtest build/debian-trixie/*.dsc \
+    build/debian-trixie/streamripper_*_amd64.deb \
+    -- unshare --tarball ~/.cache/sbuild/trixie-amd64.tar
+  apt install --simulate ./build/debian-trixie/streamripper_*_amd64.deb
+  sudo apt install ./build/debian-trixie/streamripper_*_amd64.deb
+
+To rebuild the published source package without the Git checkout:
+  dpkg-source -x streamripper_1.65.0~rc.1-1~trixie1.dsc
+  cd streamripper-1.65.0~rc.1
+  dpkg-buildpackage --build=binary --no-sign
+
+The second method needs the Build-Depends from debian/control installed.
+Use sbuild on the .dsc for an isolated rebuild instead. Packages are unsigned
+local builds. Install with apt to resolve dependencies. Installation requires
+administrator rights; recording runs as the calling user.
+The autopkgtest installs the binary in a fresh rootless testbed and records
+synthetic MP3 over trusted local HTTPS, checking ICY titles and Unicode names.
+
+An older ~/.local/bin/streamripper can shadow /usr/bin/streamripper in PATH.
+Use /usr/bin/streamripper explicitly to test the Debian installation.

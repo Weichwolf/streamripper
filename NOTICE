@@ -11,3 +11,6 @@ GLib, libcurl, libogg, libvorbis and the C runtime are dynamically linked system
 dependencies; their notices and source packages are provided by their projects
 and operating-system packages. These libraries are not bundled in the binary
 tarball.
+
+The Debian package instead links the system libmad dynamically and declares
+its runtime dependency through Debian's shared-library dependency metadata.

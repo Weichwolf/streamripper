@@ -45,6 +45,18 @@ protection and Linux PIE/RELRO/NOW/noexecstack. Release uses -O2. Strict adds
 -O1 -g, ASan/UBSan and non-recovering sanitizer diagnostics. ThreadSanitizer is
 available separately with the thread preset and requires a compatible host.
 
+Debian 13 package
+-----------------
+
+  make deb
+  sudo apt install ./build/debian-trixie/streamripper_*_amd64.deb
+
+This uses the same unprivileged sbuild chroot as the local btop and
+OCTA-CAPTURE packages. The Debian version is 1.65.0~rc.1-1~trixie1;
+runtime dependencies are generated automatically, including system libmad.
+Source packages, debug symbols and build records accompany the binary.
+See debian/README.source for setup, independent rebuilds and validation.
+
 Recording
 ---------
 

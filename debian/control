@@ -1,0 +1,36 @@
+Source: streamripper
+Section: sound
+Priority: optional
+Maintainer: Weichwolf <56591353+Weichwolf@users.noreply.github.com>
+Build-Depends:
+ debhelper-compat (= 13),
+ clang-19,
+ cmake (>= 3.25),
+ ninja-build,
+ pkgconf,
+ libglib2.0-dev (>= 2.52),
+ libcurl4-openssl-dev (>= 7.85),
+ libmad0-dev,
+ libogg-dev,
+ libvorbis-dev,
+ python3,
+ openssl,
+Standards-Version: 4.7.2
+Homepage: https://github.com/Weichwolf/streamripper
+Vcs-Browser: https://github.com/Weichwolf/streamripper
+Vcs-Git: https://github.com/Weichwolf/streamripper.git
+Rules-Requires-Root: no
+
+Package: streamripper
+Architecture: linux-any
+Depends:
+ ca-certificates,
+ ${misc:Depends},
+ ${shlibs:Depends},
+Description: record internet radio into separate audio tracks
+ Command-line recorder for HTTP and HTTPS MP3, ADTS AAC and Ogg/Vorbis
+ internet radio. Saves audio without transcoding, splits tracks using ICY
+ metadata and supports Unicode filenames, ID3 tags and continuous recordings.
+ .
+ Supports PLS/M3U playlists, Zeno station pages and Radio Swiss Pop.
+ HLS/DASH, DRM and Opus are not supported.

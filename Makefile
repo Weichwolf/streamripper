@@ -1,5 +1,5 @@
 PRESET ?= strict
-.PHONY: all configure test release install clean lint
+.PHONY: all configure test release deb install clean lint
 all: configure
 	cmake --build --preset $(PRESET)
 configure:
@@ -8,6 +8,8 @@ test: all
 	ctest --preset $(PRESET)
 release:
 	$(MAKE) PRESET=release test
+deb:
+	python3 tools/build-debian.py
 install: all
 	cmake --install build/$(PRESET) --prefix "$(HOME)/.local"
 clean:

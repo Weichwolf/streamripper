@@ -1,0 +1,16 @@
+#!/usr/bin/make -f
+# SPDX-License-Identifier: GPL-2.0-or-later
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+export DEB_CPPFLAGS_MAINT_STRIP = -D_FORTIFY_SOURCE=2
+export DEB_CPPFLAGS_MAINT_APPEND = -D_FORTIFY_SOURCE=3
+# Trixie's dwz does not support Clang's DWARF 5 .debug_addr sections.
+export DEB_CFLAGS_MAINT_APPEND = -gdwarf-4
+export CC = clang-19
+export CTEST_OUTPUT_ON_FAILURE = 1
+
+%:
+	dh $@ --buildsystem=cmake+ninja --builddirectory=build/debian
+
+override_dh_auto_configure:
+	test "$$(dpkg-parsechangelog -S Version | sed 's/-[^-]*$$//')" = "$$(sed 's/-/~/g' VERSION)"
+	dh_auto_configure -- -DCMAKE_BUILD_TYPE=Release -DSTREAMRIPPER_SANITIZER=none -DSTREAMRIPPER_STATIC_MAD=OFF -DSTREAMRIPPER_USE_CCACHE=OFF -DCMAKE_SKIP_RPATH=ON

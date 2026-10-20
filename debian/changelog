@@ -1,0 +1,7 @@
+streamripper (1.65.0~rc.1-1~trixie1) trixie; urgency=medium
+
+  * Package the maintained 1.65.0-rc.1 Linux release candidate for Debian 13.
+  * Use debhelper 13, Clang 19, Debian hardening flags and offline tests.
+  * Link system libraries dynamically and generate runtime dependencies.
+
+ -- Weichwolf <56591353+Weichwolf@users.noreply.github.com>  Tue, 20 Oct 2026 19:49:29 +0200

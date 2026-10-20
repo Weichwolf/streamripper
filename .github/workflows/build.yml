@@ -37,3 +37,28 @@ jobs:
         with:
           name: linux-x86_64
           path: build/packages/*.tar.gz
+  debian:
+    runs-on: ubuntu-24.04
+    container: debian:13
+    steps:
+      - name: Install Debian build tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends git ca-certificates debhelper dpkg-dev lintian clang-19 cmake ninja-build pkgconf libglib2.0-dev libcurl4-openssl-dev libmad0-dev libogg-dev libvorbis-dev python3 openssl
+      - uses: actions/checkout@v7.0.1
+      - name: Build and test Debian packages
+        run: dpkg-buildpackage --build=binary --no-sign
+      - name: Check Debian packages
+        run: lintian --fail-on error,warning ../streamripper_*_amd64.changes
+      - name: Test installed Debian executable
+        run: |
+          apt-get install -y ../streamripper_*_amd64.deb
+          python3 debian/tests/recording.py
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: debian13-amd64
+          path: |
+            ../streamripper_*.deb
+            ../streamripper-dbgsym_*.deb
+            ../streamripper_*.changes
+            ../streamripper_*.buildinfo
