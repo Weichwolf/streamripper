@@ -44,7 +44,7 @@ jobs:
       - name: Install Debian build tools
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends git ca-certificates debhelper dpkg-dev lintian clang-19 cmake ninja-build pkgconf libglib2.0-dev libcurl4-openssl-dev libmad0-dev libogg-dev libvorbis-dev python3 openssl
+          apt-get install -y --no-install-recommends build-essential git ca-certificates debhelper dpkg-dev lintian clang-19 cmake ninja-build pkgconf libglib2.0-dev libcurl4-openssl-dev libmad0-dev libogg-dev libvorbis-dev python3 openssl
       - uses: actions/checkout@v7.0.1
       - name: Build and test Debian packages
         run: dpkg-buildpackage --build=binary --no-sign
